@@ -35,7 +35,7 @@ struct ContentView: View {
             }
             Text(session.listening
                  ? "Listening. Swipe back to the app you were typing in — the clawd keyboard is filling in your words."
-                 : "Add the clawd keyboard: Settings → General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full Access.\n\nThen tap 🎤 on the keyboard. The first tap opens this app so the mic can start; after that it listens from the background for \(Session.idleMinutes) minutes.")
+                 : "Add the clawd keyboard: Settings → General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full Access.\n\nBringing the keyboard up hops through this app for a second so the mic can start — iOS allows nothing else. The mic is off the moment you hit done. No orange dot = no mic.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
             HStack(spacing: 14) {
                 Button(session.listening ? "stop" : "listen") { session.listening ? session.stop() : session.start() }

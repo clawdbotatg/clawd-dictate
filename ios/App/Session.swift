@@ -9,7 +9,7 @@ import UIKit
 
 final class Session: NSObject, ObservableObject {
     static let shared = Session()
-    static let idleMinutes = 24 * 60
+    static let idleMinutes = 0          // 0 = the mic closes the moment a dictation ends
 
     @Published var state = "idle"
     @Published var live = ""
@@ -144,10 +144,11 @@ final class Session: NSObject, ObservableObject {
         ws?.cancel(with: .normalClosure, reason: nil); ws = nil
         finals = []
         live = text
-        // The mic stays OPEN (orange dot) for idleMinutes: iOS refuses to reopen
-        // it from the background (tested 2026-09-15 — parking it meant a hop into
-        // the app every time). Audio is only STREAMED while listening: the tap
-        // drops every buffer otherwise, nothing leaves the phone between dictations.
+        // The mic is RELEASED the moment a dictation ends (Austin, 09-15: the
+        // orange dot must mean "dictating", nothing else — trust the OS
+        // indicator, not a promise in code). iOS won't reopen a mic from the
+        // background, so the next keyboard use hops through this app once.
+        if alive { closeAudio() }
     }
 
     private func armIdle() {
