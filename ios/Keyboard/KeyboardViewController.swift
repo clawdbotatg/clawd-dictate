@@ -12,12 +12,14 @@
 // list, and hands text back through the App Group. The interim is typed and
 // re-typed as it revises (delete only what we wrote), the final lands once.
 import UIKit
+import SwiftUI
 
 final class KeyboardViewController: UIInputViewController {
     private let bar = UIView()
     private let dot = UIButton(type: .system)
     private let liveLabel = UILabel()
     private let doneBtn = UIButton(type: .system)
+    private var wakeHost: UIViewController?   // a SwiftUI Link — the one launch path iOS 18+ still allows a keyboard
     private var doneRequested = false
     private var myDict = ""                // this keyboard's dictation id — text for any other is not ours
     private let keysView = UIStackView()
@@ -162,23 +164,42 @@ final class KeyboardViewController: UIInputViewController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: w)
     }
 
-    /// Keyboard extensions have no UIApplication.shared, and which launch path
-    /// works changes with iOS: the responder chain's application object, the
-    /// UIApplication class via runtime lookup, then extensionContext.open.
-    @objc private func openURL(_ url: URL) -> Bool { false }
+    /// iOS 18+ closed every programmatic way for a keyboard to open its app
+    /// (responder-chain openURL:, extensionContext.open — all refused). What
+    /// still works: SwiftUI's openURL environment action, and a SwiftUI Link.
+    /// Try the action; if the app doesn't come alive, show a Link to tap.
     private func openApp(_ url: URL) {
-        let sel = #selector(openURL(_:))
-        var r: UIResponder? = self.next
-        while let cur = r {
-            if cur.responds(to: sel) { cur.perform(sel, with: url); return }
-            r = cur.next
+        EnvironmentValues().openURL(url)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self, !Shared.aliveNow else { return }
+            self.showWake(url)
         }
-        if let cls = NSClassFromString("UIApplication") as? NSObject.Type,
-           let app = cls.perform(NSSelectorFromString("sharedApplication"))?.takeUnretainedValue() as? NSObject,
-           app.responds(to: sel) { app.perform(sel, with: url); return }
-        extensionContext?.open(url) { [weak self] ok in
-            DispatchQueue.main.async { if !ok { self?.setBar("can't wake it from here — open clawd dictate, then come back", on: false) } }
+    }
+
+    private func showWake(_ url: URL) {
+        if wakeHost != nil { return }
+        setBar("app is asleep — tap wake", on: false)
+        let link = Link(destination: url) {
+            Text("wake").font(.system(size: 17, weight: .semibold)).foregroundColor(.white)
+                .padding(.horizontal, 20).frame(maxHeight: .infinity)
+                .background(Color(red: 0.9, green: 0.25, blue: 0.2)).cornerRadius(6)
         }
+        let host = UIHostingController(rootView: link)
+        host.view.backgroundColor = .clear
+        host.view.translatesAutoresizingMaskIntoConstraints = false
+        addChild(host); bar.addSubview(host.view); host.didMove(toParent: self)
+        NSLayoutConstraint.activate([
+            host.view.trailingAnchor.constraint(equalTo: doneBtn.leadingAnchor, constant: -8),
+            host.view.topAnchor.constraint(equalTo: bar.topAnchor, constant: 4),
+            host.view.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -4),
+        ])
+        wakeHost = host
+    }
+
+    private func hideWake() {
+        guard let h = wakeHost else { return }
+        h.willMove(toParent: nil); h.view.removeFromSuperview(); h.removeFromParent()
+        wakeHost = nil
     }
 
     // MARK: text from the app
@@ -193,6 +214,7 @@ final class KeyboardViewController: UIInputViewController {
         if state.hasPrefix("error") { listening = false; setBar(state, on: false); return }
         let done = d.string(forKey: Shared.kDone) ?? ""
         if state == "listening" || state == "starting" {
+            hideWake()
             guard listening else { return }          // not ours (another field's keyboard asked)
             let full = done + (interim.isEmpty ? "" : (done.isEmpty ? "" : " ") + interim)
             setBar("listening", on: true)             // the words are in the field — the bar just says so
