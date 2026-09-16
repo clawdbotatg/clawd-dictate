@@ -117,7 +117,7 @@ struct Vocab {
         for (from, to) in s.rules + b.rules {
             let f = from.trimmingCharacters(in: .whitespaces)
             if f.isEmpty { continue }
-            let esc = NSRegularExpression.escapedPattern(for: f).replacingOccurrences(of: #"\ "#, with: #"\s+"#)
+            let esc = NSRegularExpression.escapedPattern(for: f).replacingOccurrences(of: #"\ "#, with: #"[\s,.]+"#)   // "ETH, skills" too
             if let rx = try? NSRegularExpression(pattern: #"\b"# + esc + #"\b"#, options: .caseInsensitive) {
                 v.rules.append((rx, to))
             }
