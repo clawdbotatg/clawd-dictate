@@ -211,6 +211,10 @@ final class KeyboardViewController: UIInputViewController {
         let state = d.string(forKey: Shared.kState) ?? "idle"
         guard (d.string(forKey: Shared.kDict) ?? "") == myDict else { return }   // another field's dictation — not ours
         let interim = d.string(forKey: Shared.kInterim) ?? ""
+        if state == "error: wake" {                 // the app is awake but iOS won't give it the mic in the background: hop
+            if listening { setBar("waking the mic… swipe back here", on: true); openApp(URL(string: "clawddictate://start")!) }
+            return
+        }
         if state.hasPrefix("error") { listening = false; setBar(state, on: false); return }
         let done = d.string(forKey: Shared.kDone) ?? ""
         if state == "listening" || state == "starting" {

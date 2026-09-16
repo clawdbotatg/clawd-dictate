@@ -14,7 +14,7 @@ struct ClawdDictateApp: App {
             ContentView().environmentObject(session)
                 .onOpenURL { url in
                     guard url.scheme == "clawddictate" else { return }
-                    if url.host == "start" { session.start(id: Shared.defaults.string(forKey: Shared.kCmd)?.split(separator: ":").last.map(String.init) ?? "app") }
+                    if url.host == "start" { session.start(id: Shared.defaults.string(forKey: Shared.kCmd)?.split(separator: ":").last.map(String.init) ?? "app", force: true) }
                     if url.host == "stop" { session.stop() }
                 }
         }

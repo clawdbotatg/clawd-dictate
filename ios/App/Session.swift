@@ -25,6 +25,7 @@ final class Session: NSObject, ObservableObject {
     private var heartbeat: Timer?
     private var idleTimer: Timer?
     private var cmdObserver: AnyObject?
+    private var silence: AVAudioPlayer?     // parked: silence keeps us alive in the background WITHOUT the mic (no orange dot)
     private var lastCmd = ""
     private var dictId = ""                 // the dictation being served (the keyboard's start nonce, or "app")
 
@@ -74,9 +75,10 @@ final class Session: NSObject, ObservableObject {
     }
 
     // MARK: start / stop
-    func start(id: String = "app") {
+    func start(id: String = "app", force: Bool = false) {
         if listening {
-            if id == dictId { return }
+            if id == dictId && !force { return }
+            if id == dictId { finishNow() }   // the hop re-issues our own start: begin again, in the foreground now
             // a NEW dictation (another field's keyboard) while one is still open:
             // finish the old one under its own id, then begin fresh — its text
             // never lands in the new place
@@ -86,6 +88,13 @@ final class Session: NSObject, ObservableObject {
         finals = []; interim = ""
         publish("starting")
         refreshVocab()                       // a word added in the harness ⚙️ reaches the NEXT dictation, not the next app launch
+        if alive && !engine.isRunning {      // parked: the app is awake, the mic is not
+            do { try openMic() } catch {
+                // iOS won't let a background app START the mic — the keyboard hops us to the front and asks again
+                publish("error: wake")
+                return
+            }
+        }
         if !alive {
             // ask for the mic explicitly (the first time this is a system prompt)
             AVAudioApplication.requestRecordPermission { [weak self] ok in
@@ -135,6 +144,7 @@ final class Session: NSObject, ObservableObject {
         ws?.cancel(with: .normalClosure, reason: nil); ws = nil
         finals = []
         live = text
+        if alive { parkMic() }
     }
 
     private func armIdle() {
@@ -147,6 +157,18 @@ final class Session: NSObject, ObservableObject {
 
     // MARK: audio
     private func openAudio() throws {
+        try openMic()
+        alive = true
+        heartbeat?.invalidate()
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            Shared.defaults.set(Date(), forKey: Shared.kAlive)
+        }
+        Shared.defaults.set(Date(), forKey: Shared.kAlive)
+    }
+
+    /// The mic, from a parked or fresh state: record category, tap, engine.
+    private func openMic() throws {
+        silence?.stop(); silence = nil
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker])
         try s.setActive(true)
@@ -170,15 +192,38 @@ final class Session: NSObject, ObservableObject {
         }
         engine.prepare()
         try engine.start()
-        alive = true
-        heartbeat?.invalidate()
-        heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            Shared.defaults.set(Date(), forKey: Shared.kAlive)
-        }
-        Shared.defaults.set(Date(), forKey: Shared.kAlive)
     }
 
+    /// Park: release the mic (orange dot off) but stay alive in the background
+    /// by playing silence, so the next start needs no hop — if iOS lets a
+    /// background app reopen the mic; if not, start() asks for the hop.
+    private func parkMic() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        let s = AVAudioSession.sharedInstance()
+        try? s.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? s.setActive(true)
+        if silence == nil, let p = try? AVAudioPlayer(data: Session.silentWav) {
+            p.numberOfLoops = -1; p.volume = 0
+            silence = p
+        }
+        silence?.play()
+    }
+
+    /// One second of 16-bit mono silence as a WAV, built in memory.
+    private static let silentWav: Data = {
+        let rate: UInt32 = 8000, n: UInt32 = rate * 2
+        var d = Data()
+        func u32(_ v: UInt32) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        func u16(_ v: UInt16) { withUnsafeBytes(of: v.littleEndian) { d.append(contentsOf: $0) } }
+        d.append("RIFF".data(using: .ascii)!); u32(36 + n); d.append("WAVE".data(using: .ascii)!)
+        d.append("fmt ".data(using: .ascii)!); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16)
+        d.append("data".data(using: .ascii)!); u32(n); d.append(Data(count: Int(n)))
+        return d
+    }()
+
     private func closeAudio() {
+        silence?.stop(); silence = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
