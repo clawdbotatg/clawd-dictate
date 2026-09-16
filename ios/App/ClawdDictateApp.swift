@@ -28,14 +28,14 @@ struct ContentView: View {
             Image("Logo").resizable().scaledToFit().frame(width: 170, height: 170).clipShape(RoundedRectangle(cornerRadius: 36))
             Text("clawd dictate").font(.title2).bold()
             Text(session.state).font(.headline).foregroundStyle(session.listening ? .red : (session.state.hasPrefix("error") ? .orange : .secondary))
-            Text("mic \(session.listening ? "ON — dictating" : "off") · last command: \(Shared.defaults.string(forKey: Shared.kCmd) ?? "none")")
+            Text(session.listening ? "dictating — audio streaming" : (Shared.aliveNow ? "mic open, NOT streaming (no socket)" : "mic off"))
                 .font(.caption2).foregroundStyle(.secondary)
             if !session.live.isEmpty {
                 Text(session.live).font(.body).multilineTextAlignment(.center).padding(.horizontal)
             }
             Text(session.listening
                  ? "Listening. Swipe back to the app you were typing in — the clawd keyboard is filling in your words."
-                 : "Add the clawd keyboard: Settings → General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full Access.\n\nBringing the keyboard up hops through this app for a second so the mic can start — iOS allows nothing else. The mic is off the moment you hit done. No orange dot = no mic.")
+                 : "Add the clawd keyboard: Settings → General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full Access.\n\nThe first keyboard use hops through this app for a second so the mic can open — iOS allows nothing else. After that the mic stays open (orange dot) so there is no hop; audio only streams while the keyboard dot is red.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
             HStack(spacing: 14) {
                 Button(session.listening ? "stop" : "listen") { session.listening ? session.stop() : session.start() }
