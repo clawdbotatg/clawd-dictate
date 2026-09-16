@@ -46,6 +46,11 @@ enum Shared {
     final class Box { let fn: () -> Void; init(_ f: @escaping () -> Void) { fn = f } }
 
     static func bump() { defaults.set((defaults.integer(forKey: kSeq) + 1), forKey: kSeq) }
+    /// The app has the mic open (heartbeat within 6 s): a start needs no hop.
+    static var aliveNow: Bool {
+        guard let d = defaults.object(forKey: kAlive) as? Date else { return false }
+        return Date().timeIntervalSince(d) < 6
+    }
     /// A dictation the app began within the last few seconds — the one a hop
     /// just started for the keyboard that is re-appearing now.
     static var youngDictation: String? {

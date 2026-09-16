@@ -2,23 +2,21 @@
 // keyterm-biased; results (interim/final, rules applied) go to the App Group
 // mailbox for the keyboard.
 //
-// THE GUARANTEE (Austin, 2026-09-15: "100% sure my voice isn't going to the
-// server when I don't mean it to"). Read this file top to bottom and hold it
-// to these four facts:
-//   1. The microphone tap exists, and the audio engine runs, ONLY between
-//      openMic() and closeMic(). There is no other code that touches input.
-//   2. stop() calls closeMic() FIRST, synchronously — the tap is removed, the
-//      engine stopped and the audio session deactivated before anything else
-//      happens. From that instant no audio buffer exists to send. The orange
-//      dot goes out with it: no dot = no mic, and that's iOS saying so.
-//   3. The only place audio is sent is the tap closure, and it additionally
-//      refuses unless `listening` is true and a socket exists.
-//   4. The socket is opened in openDeepgram() and closed in commit(), 1.2 s
-//      after stop() — that window only flushes Deepgram's transcript of audio
-//      sent BEFORE stop(); the mic is already gone.
-// There is no idle hold, no parking, no background keep-alive: the app does
-// nothing between dictations. iOS refuses to start a mic from the background,
-// so each dictation begins with a hop through this app (the keyboard does it).
+// THE GUARANTEE (Austin, 2026-09-15): audio reaches Deepgram ONLY while a
+// dictation is live (the keyboard's red dot). Read this file top to bottom
+// and hold it to these facts:
+//   1. The ONLY line that sends audio anywhere is inside the mic tap in
+//      openMic(), and it refuses unless `listening` is true AND a socket exists.
+//   2. The socket exists only between openDeepgram() (called by start) and
+//      commit() (1.2 s after stop, to flush the transcript of audio already
+//      sent). Between dictations `ws` is nil — there is nothing to send to.
+//   3. stop() sets `listening = false` first, synchronously; from that instant
+//      the tap drops every buffer, then the socket is closed.
+// The MICROPHONE, though, stays open between dictations (the orange dot): iOS
+// refuses to start a mic from the background, so releasing it would mean a hop
+// through this app on every keyboard use (tried 09-15, Austin: "I want good
+// UX"). Open mic + no socket = the hardware listens, nothing leaves the phone.
+// The mic closes after idleMinutes without a dictation, or on Quit.
 import AVFoundation
 import Foundation
 import UIKit
@@ -39,6 +37,10 @@ final class Session: NSObject, ObservableObject {
     private var cmdObserver: AnyObject?
     private var lastCmd = ""
     private var dictId = ""                 // the dictation being served (the keyboard's start nonce, or "app")
+    static let idleMinutes = 24 * 60        // the mic (not the socket) stays open this long after the last dictation
+    private var alive = false               // mic open + heartbeat running
+    private var heartbeat: Timer?
+    private var idleTimer: Timer?
 
     override init() {
         super.init()
@@ -96,6 +98,13 @@ final class Session: NSObject, ObservableObject {
         Shared.defaults.set(Date(), forKey: Shared.kStarted)
         publish("starting")
         refreshVocab()                        // a word added in the harness ⚙️ reaches the NEXT dictation
+        if alive {                            // mic already open: just open the socket
+            openDeepgram()
+            listening = true
+            publish("listening")
+            armIdle()
+            return
+        }
         AVAudioApplication.requestRecordPermission { [weak self] ok in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -105,25 +114,37 @@ final class Session: NSObject, ObservableObject {
                     self.publish("error: wake")
                     return
                 }
+                self.alive = true
+                self.heartbeat?.invalidate()
+                self.heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in Shared.defaults.set(Date(), forKey: Shared.kAlive) }
+                Shared.defaults.set(Date(), forKey: Shared.kAlive)
                 self.openDeepgram()
                 self.listening = true
                 self.publish("listening")
+                self.armIdle()
             }
+        }
+    }
+
+    private func armIdle() {
+        idleTimer?.invalidate()
+        idleTimer = Timer.scheduledTimer(withTimeInterval: Double(Session.idleMinutes) * 60, repeats: false) { [weak self] _ in
+            guard let self = self, !self.listening else { return }
+            self.closeMic()
         }
     }
 
     func stop() {
         guard listening else { return }
-        listening = false
-        closeMic()                            // (2) FIRST. No mic, no buffers, no dot.
+        listening = false                     // (3) FIRST: the tap drops every buffer from here on
         ws?.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.commit() }   // (4) flush the tail, then close the socket
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.commit() }   // (2) flush the tail, then the socket is gone
+        armIdle()
     }
 
     /// End the open dictation at once (no tail): what's typed so far is its final.
     private func finishNow() {
         listening = false
-        closeMic()
         ws?.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
         commit()
     }
@@ -141,7 +162,7 @@ final class Session: NSObject, ObservableObject {
         live = text
     }
 
-    // MARK: audio — (1) the ONLY code that touches the microphone
+    // MARK: audio — the ONLY code that touches the microphone
     private func openMic() throws {
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker])
@@ -151,7 +172,7 @@ final class Session: NSObject, ObservableObject {
         let outFmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
         converter = AVAudioConverter(from: inFmt, to: outFmt)
         input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buf, _ in
-            // (3) the only send of audio anywhere — and only while listening, to an open socket
+            // (1) the ONLY send of audio anywhere — and only while listening, to an open socket
             guard let self = self, self.listening, let conv = self.converter, let ws = self.ws else { return }
             let frames = AVAudioFrameCount(Double(buf.frameLength) * 16000 / inFmt.sampleRate) + 16
             guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: frames) else { return }
@@ -175,6 +196,10 @@ final class Session: NSObject, ObservableObject {
         engine.reset()
         converter = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        heartbeat?.invalidate(); heartbeat = nil
+        Shared.defaults.removeObject(forKey: Shared.kAlive)
+        alive = false
+        publish("idle")
     }
 
     // MARK: deepgram
@@ -204,7 +229,7 @@ final class Session: NSObject, ObservableObject {
             switch result {
             case .failure(let e):
                 DispatchQueue.main.async {
-                    if self.listening { self.listening = false; self.closeMic(); self.publish("error: deepgram — \(e.localizedDescription)"); self.commit() }
+                    if self.listening { self.listening = false; self.publish("error: deepgram — \(e.localizedDescription)"); self.commit() }
                 }
                 return
             case .success(let msg):

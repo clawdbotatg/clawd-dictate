@@ -155,6 +155,7 @@ final class KeyboardViewController: UIInputViewController {
         Shared.defaults.set("start:" + nonce, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)
         listening = true
+        if Shared.aliveNow { setBar("listening", on: true); return }   // mic already open in the app: no hop
         hopping = true
         setBar("starting the mic in clawd dictate… swipe back here", on: true)
         openApp(URL(string: "clawddictate://start")!)
