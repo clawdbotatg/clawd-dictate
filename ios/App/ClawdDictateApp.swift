@@ -25,7 +25,7 @@ struct ContentView: View {
     @EnvironmentObject var session: Session
     var body: some View {
         VStack(spacing: 18) {
-            Text("🎤").font(.system(size: 64))
+            Image("Logo").resizable().scaledToFit().frame(width: 170, height: 170).clipShape(RoundedRectangle(cornerRadius: 36))
             Text("clawd dictate").font(.title2).bold()
             Text(session.state).font(.headline).foregroundStyle(session.listening ? .red : (session.state.hasPrefix("error") ? .orange : .secondary))
             Text("mic session \(Shared.aliveNow ? "alive" : "off") · last command: \(Shared.defaults.string(forKey: Shared.kCmd) ?? "none")")
