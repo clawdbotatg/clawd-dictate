@@ -144,7 +144,10 @@ final class Session: NSObject, ObservableObject {
         ws?.cancel(with: .normalClosure, reason: nil); ws = nil
         finals = []
         live = text
-        if alive { parkMic() }
+        // The mic stays OPEN (orange dot) for idleMinutes: iOS refuses to reopen
+        // it from the background (tested 2026-09-15 — parking it meant a hop into
+        // the app every time). Audio is only STREAMED while listening: the tap
+        // drops every buffer otherwise, nothing leaves the phone between dictations.
     }
 
     private func armIdle() {
