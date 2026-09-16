@@ -48,7 +48,7 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
   the app via `clawddictate://start` — ONLY `EnvironmentValues().openURL` /
   a SwiftUI `Link` work on iOS 18+ (responder-chain and extensionContext
   hacks are dead, see `openApp`); after that the app stays awake 60 min and starts at once.
-- **Mic between dictations:** held OPEN for 60 min after the last one (orange dot). Tested 09-15: iOS refuses to reopen the mic from the background, so releasing it means a hop into the app on every keyboard use. Austin chose hold. Audio streams to Deepgram only while listening — the tap drops buffers otherwise.
+- **Mic between dictations:** held OPEN for 24 h after the last one (orange dot). Tested 09-15: iOS refuses to reopen the mic from the background, so releasing it means a hop into the app on every keyboard use. Austin chose hold. Audio streams to Deepgram only while listening — the tap drops buffers otherwise.
 - The keyboard is a plain QWERTY with a bar on top (red dot = listening).
   It auto-starts when it appears if the app is awake; typing a key ends the
   interim's ownership so dictation never deletes typed text.

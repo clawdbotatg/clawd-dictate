@@ -9,7 +9,7 @@ import UIKit
 
 final class Session: NSObject, ObservableObject {
     static let shared = Session()
-    static let idleMinutes = 60
+    static let idleMinutes = 24 * 60
 
     @Published var state = "idle"
     @Published var live = ""
