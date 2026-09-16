@@ -14,7 +14,7 @@ struct ClawdDictateApp: App {
             ContentView().environmentObject(session)
                 .onOpenURL { url in
                     guard url.scheme == "clawddictate" else { return }
-                    if url.host == "start" { session.start(id: Shared.defaults.string(forKey: Shared.kCmd)?.split(separator: ":").last.map(String.init) ?? "app", force: true) }
+                    if url.host == "start" { session.start(id: Shared.defaults.string(forKey: Shared.kCmd)?.split(separator: ":").last.map(String.init) ?? "app") }
                     if url.host == "stop" { session.stop() }
                 }
         }
@@ -28,7 +28,7 @@ struct ContentView: View {
             Image("Logo").resizable().scaledToFit().frame(width: 170, height: 170).clipShape(RoundedRectangle(cornerRadius: 36))
             Text("clawd dictate").font(.title2).bold()
             Text(session.state).font(.headline).foregroundStyle(session.listening ? .red : (session.state.hasPrefix("error") ? .orange : .secondary))
-            Text("mic session \(Shared.aliveNow ? "alive" : "off") · last command: \(Shared.defaults.string(forKey: Shared.kCmd) ?? "none")")
+            Text("mic \(session.listening ? "ON — dictating" : "off") · last command: \(Shared.defaults.string(forKey: Shared.kCmd) ?? "none")")
                 .font(.caption2).foregroundStyle(.secondary)
             if !session.live.isEmpty {
                 Text(session.live).font(.body).multilineTextAlignment(.center).padding(.horizontal)

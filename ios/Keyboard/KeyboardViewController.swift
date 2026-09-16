@@ -20,6 +20,7 @@ final class KeyboardViewController: UIInputViewController {
     private let liveLabel = UILabel()
     private let doneBtn = UIButton(type: .system)
     private var wakeHost: UIViewController?   // a SwiftUI Link — the one launch path iOS 18+ still allows a keyboard
+    private var hopping = false               // we sent the user through the app: the keyboard's disappearance is NOT a stop
     private var doneRequested = false
     private var myDict = ""                // this keyboard's dictation id — text for any other is not ours
     private let keysView = UIStackView()
@@ -60,15 +61,25 @@ final class KeyboardViewController: UIInputViewController {
         written = ""; committed = 0
         lastSeq = Shared.defaults.integer(forKey: Shared.kSeq)   // don't replay a previous dictation's final
         if !hasFullAccess { setBar("needs Full Access: Settings → Keyboards → clawd keys", on: false); return }
-        // Austin (09-15): "recording as soon as I bring it up" — always. When the
-        // app is asleep that means one hop into clawd dictate (swipe back).
+        hopping = false
+        // Back from the hop: the app is already listening for us — adopt that
+        // dictation instead of starting another (which would stop it, and a
+        // stopped mic can't restart from the background: that was the flapping).
+        if let id = Shared.youngDictation {
+            myDict = id; listening = true; written = ""; committed = 0
+            lastSeq = -1                                   // take its text from the top
+            setBar("listening", on: true)
+            return
+        }
+        // Austin (09-15): "recording as soon as I bring it up" — always. Every
+        // start hops through clawd dictate (iOS won't start a mic in the background).
         if wantListening { startListening() }
         else { setBar("paused — tap ● to dictate", on: false) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if listening { stopListening(silent: true) }
+        if listening && !hopping { stopListening(silent: true) }   // the hop dismisses us — that's not a stop
     }
 
     // MARK: the bar
@@ -144,8 +155,9 @@ final class KeyboardViewController: UIInputViewController {
         Shared.defaults.set("start:" + nonce, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)
         listening = true
-        if Shared.aliveNow { setBar("listening…", on: true) }
-        else { setBar("waking clawd dictate… swipe back here", on: true); openApp(URL(string: "clawddictate://start")!) }
+        hopping = true
+        setBar("starting the mic in clawd dictate… swipe back here", on: true)
+        openApp(URL(string: "clawddictate://start")!)
     }
 
     private func stopListening(silent: Bool) {
@@ -158,7 +170,7 @@ final class KeyboardViewController: UIInputViewController {
         stopTimeout?.cancel()
         let w = DispatchWorkItem { [weak self] in
             guard let self = self, self.liveLabel.text == "finishing…" else { return }
-            self.setBar(Shared.aliveNow ? "paused — tap ● to dictate" : "clawd dictate is asleep — tap ● to wake it", on: false)
+            self.setBar("paused — tap ● to dictate", on: false)
         }
         stopTimeout = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: w)
@@ -170,8 +182,8 @@ final class KeyboardViewController: UIInputViewController {
     /// Try the action; if the app doesn't come alive, show a Link to tap.
     private func openApp(_ url: URL) {
         EnvironmentValues().openURL(url)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self = self, !Shared.aliveNow else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self = self, Shared.youngDictation == nil else { return }
             self.showWake(url)
         }
     }
@@ -211,14 +223,15 @@ final class KeyboardViewController: UIInputViewController {
         let state = d.string(forKey: Shared.kState) ?? "idle"
         guard (d.string(forKey: Shared.kDict) ?? "") == myDict else { return }   // another field's dictation — not ours
         let interim = d.string(forKey: Shared.kInterim) ?? ""
-        if state == "error: wake" {                 // the app is awake but iOS won't give it the mic in the background: hop
-            if listening { setBar("waking the mic… swipe back here", on: true); openApp(URL(string: "clawddictate://start")!) }
+        if state == "error: wake" {                 // iOS won't give a background app the mic: hop (once)
+            if listening && !hopping { hopping = true; setBar("starting the mic in clawd dictate… swipe back here", on: true); openApp(URL(string: "clawddictate://start")!) }
             return
         }
         if state.hasPrefix("error") { listening = false; setBar(state, on: false); return }
         let done = d.string(forKey: Shared.kDone) ?? ""
         if state == "listening" || state == "starting" {
             hideWake()
+            if state == "listening" { hopping = false }
             guard listening else { return }          // not ours (another field's keyboard asked)
             let full = done + (interim.isEmpty ? "" : (done.isEmpty ? "" : " ") + interim)
             setBar("listening", on: true)             // the words are in the field — the bar just says so
@@ -233,10 +246,9 @@ final class KeyboardViewController: UIInputViewController {
             }
             written = ""; committed = 0
             if doneRequested { doneRequested = false; advanceToNextInputMode(); return }
-            if listening {                            // the app ended it (idle timeout) — resume if we still want it
+            if listening {                            // the app ended it (error) — we're paused now
                 listening = false
-                if wantListening && Shared.aliveNow { startListening() }
-                else if !Shared.aliveNow { setBar("clawd dictate is asleep — tap ● to wake it", on: false) }
+                setBar("paused — tap ● to dictate", on: false)
             } else if liveLabel.text == "finishing…" { setBar("paused — tap ● to dictate", on: false) }
         }
     }
@@ -361,7 +373,7 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func tapSymbols() { symbols.toggle(); shifted = false; layoutKeys() }
     @objc private func tapBackspace() { handTyped(); textDocumentProxy.deleteBackward() }
     @objc private func tapSpace() { handTyped(); textDocumentProxy.insertText(" ") }
-    @objc private func tapReturn() { handTyped(); textDocumentProxy.insertText("\n") }
+    @objc private func tapReturn() { if listening { wantListening = false; stopListening(silent: false) }; handTyped(); textDocumentProxy.insertText("\n") }
     @objc private func tapGlobe() { advanceToNextInputMode() }
     @objc private func tapMacro(_ sender: UIButton) {
         guard let text = sender.accessibilityLabel else { return }
