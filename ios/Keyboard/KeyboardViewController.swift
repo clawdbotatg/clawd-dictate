@@ -70,6 +70,7 @@ final class KeyboardViewController: UIInputViewController {
             (Shared.leaseUntil(id: myDict) ?? .distantPast) > Date()
         Shared.log("kb", "appear returning=\(returning) hop=\(hopping) alive=\(Shared.aliveNow) ctx=\(ctxDesc)")
         hopping = false
+        pausedDoc = nil
         if returning {
             Shared.renewLease(id: myDict)
             lastSeq = -1
@@ -129,8 +130,12 @@ final class KeyboardViewController: UIInputViewController {
         startListening()
     }
 
+    private var pausedDoc: UUID?              // Return stopped us here; another document starts a new dictation
     private func tick() {
         guard visible else { return }
+        if myDict.isEmpty, wantListening, let pd = pausedDoc, textDocumentProxy.documentIdentifier != pd {
+            pausedDoc = nil; startListening(); return
+        }
         if !myDict.isEmpty && !ownsCursor { cursorMoved(); return }
         if listening { Shared.renewLease(id: myDict, seconds: hopping ? 20 : 6) }
         pull()
@@ -197,7 +202,7 @@ final class KeyboardViewController: UIInputViewController {
 
     @objc private func tapDot() {
         if listening { wantListening = false; stopListening(silent: false); return }
-        wantListening = true
+        wantListening = true; pausedDoc = nil
         startListening()
     }
 
@@ -449,10 +454,13 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func tapSymbols() { symbols.toggle(); shifted = false; layoutKeys() }
     @objc private func tapBackspace() { handTyped(); textDocumentProxy.deleteBackward(); rememberCursor() }
     @objc private func tapSpace() { handTyped(); textDocumentProxy.insertText(" "); rememberCursor() }
+    /// Return ALWAYS stops (Austin, 09-17). Listening resumes when the keyboard
+    /// comes up again or the cursor lands in another document — not in this one.
     @objc private func tapReturn() {
         abandon()   // Return can submit the field; never insert a late final into the next one.
         textDocumentProxy.insertText("\n")
-        if wantListening { startListening() } else { setBar("paused — tap ● to dictate", on: false) }   // still listening: the next message starts here
+        pausedDoc = textDocumentProxy.documentIdentifier
+        setBar("paused — tap ● to dictate", on: false)
     }
     @objc private func tapGlobe() { advanceToNextInputMode() }
     @objc private func tapMacro(_ sender: UIButton) {

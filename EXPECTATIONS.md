@@ -14,8 +14,8 @@ Mac tool, harness mic) is held to these. If a change breaks one, it is a bug.
 
 - Every text box is its own namespace. Words I say into one chat never land in another.
 - When I click into a different box, the old dictation ends there and a new one starts in the new box. Nothing is carried over.
-- Phone: Return sends the message; the keyboard keeps listening while it is up.
-- Mac: Enter sends the message and STOPS dictation. Escape or one Control tap also stops.
+- Enter / Return ALWAYS stops dictation, on every surface. It still sends the message.
+- Phone: listening starts again when the keyboard comes up or the cursor lands in another box, or tap the dot. Mac: double-tap Control again.
 - Typing by hand always wins. Dictation never deletes what I typed.
 
 ## Fast
