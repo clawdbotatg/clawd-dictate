@@ -38,6 +38,8 @@ final class Session: NSObject, ObservableObject {
     private var vocabRefreshedAt = Date.distantPast
     private var streamStartedAt = Date()
     private var firstResultLogged = false
+    private var socketAttempt = 0           // 1-based; a failed socket is reopened up to socketTries times before the dictation fails
+    static let socketTries = 4
 
     override init() {
         super.init()
@@ -135,6 +137,7 @@ final class Session: NSObject, ObservableObject {
 
     private func beginStream(token: UUID) {
         guard run?.token == token, run?.phase == .starting else { return }
+        socketAttempt = 1
         openDeepgram()
         streamStartedAt = Date(); firstResultLogged = false
         Shared.log("app", "stream \(run?.id.prefix(8) ?? "-") socket opening, \(vocab.terms.count) terms")
@@ -308,11 +311,29 @@ final class Session: NSObject, ObservableObject {
 
     private func openDeepgram() {
         var req = URLRequest(url: deepgramURL())
+        req.timeoutInterval = 8
         req.setValue("Token " + Secrets.deepgramKey, forHTTPHeaderField: "Authorization")
         let task = URLSession.shared.webSocketTask(with: req)
         ws = task
         task.resume()
         receive(task)
+    }
+
+    /// Same dictation, same mic: a fresh socket after a short pause. Finals stay,
+    /// the interim and the audio during the gap are lost. The mic must not drop
+    /// for a network blip (EXPECTATIONS: never breaks itself).
+    private func reopenSocket(run: RecordingRun) {
+        audioGate.set(nil)
+        ws?.cancel(with: .normalClosure, reason: nil); ws = nil
+        interim = ""
+        let delay = 0.4 * pow(2.0, Double(socketAttempt - 1))     // 0.4, 0.8, 1.6 s
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, self.listening, self.run?.token == run.token, self.run?.phase == .streaming else { return }
+            self.socketAttempt += 1
+            self.openDeepgram()
+            self.audioGate.set(self.ws)
+            Shared.log("app", "socket reopened, try \(self.socketAttempt)/\(Session.socketTries)")
+        }
     }
 
     private func receive(_ task: URLSessionWebSocketTask) {
@@ -321,8 +342,15 @@ final class Session: NSObject, ObservableObject {
                 guard let self = self, self.ws === task else { return }
                 switch result {
                 case .failure(let e):
-                    if self.listening { self.fail("deepgram — \(e.localizedDescription)") }
-                    else { self.commit() }
+                    // A rejected handshake (a captive WiFi, a proxy, a 4xx) surfaces as POSIX 57
+                    // "Socket is not connected" (09-17); the HTTP status on the task says which.
+                    let ns = e as NSError
+                    let http = (task.response as? HTTPURLResponse)?.statusCode
+                    let why = http.map { "HTTP \($0)" } ?? "\(ns.domain) \(ns.code)"
+                    Shared.log("app", "socket failed try \(self.socketAttempt)/\(Session.socketTries): \(why) — \(e.localizedDescription) (results=\(self.firstResultLogged))")
+                    guard self.listening, let run = self.run, run.phase == .streaming else { self.commit(); return }
+                    if self.socketAttempt < Session.socketTries { self.reopenSocket(run: run); return }
+                    self.fail("deepgram — \(why) after \(self.socketAttempt) tries" + (http != nil ? " (this network may block it)" : ""))
                 case .success(let msg):
                     if case .string(let s) = msg, let d = s.data(using: .utf8),
                        let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], j["type"] as? String == "Results" {
