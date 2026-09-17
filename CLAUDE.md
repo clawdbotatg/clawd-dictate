@@ -52,8 +52,13 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
 - The keyboard is a plain QWERTY with a bar on top (red dot = listening).
   It auto-starts when it appears. Each keyboard owns a UUID and a text-field/cursor anchor; no adoption by age. A field/cursor/context change pauses dictation. Start/stop mailbox commands use that same UUID; wake URLs carry it as `?id=…`. Typing a key commits the interim before appending.
 - Build: `sh ios/gen-secrets.sh` (Secrets.swift, gitignored — from `~/.config/clawd-dictate/env`: HARNESS_URL, CAL_URL, SLOP_URL, DEEPGRAM_API_KEY, DOCS_CREDENTIAL) → `cd ios &&
-  xcodegen generate` → `xcodebuild … -destination 'id=00008150-001205C63A04401C'
-  -allowProvisioningUpdates build` → `xcrun devicectl device install app
+  xcodegen generate` → `xcodebuild -scheme ClawdDictate -derivedDataPath build
+  -destination 'id=00008150-001205C63A04401C' -allowProvisioningUpdates build`
+  (**`-derivedDataPath build` is not optional**: without it Xcode builds into
+  ~/Library/Developer/Xcode/DerivedData and the install step below ships
+  whatever stale binary sits in `ios/build` — that put the 09-15 build back
+  on the phone on 09-17; the code lives in `*.debug.dylib`, check its date)
+  → `xcrun devicectl device install app
   --device 8B053FBC-B638-548F-B045-F5DDE25D3BDD build/Build/Products/Debug-iphoneos/ClawdDictate.app`.
   Set `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` first (the
   default toolchain is the CLT). Team is **XX7QP5899Z** (Xcode's account),
