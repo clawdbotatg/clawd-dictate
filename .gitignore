@@ -7,3 +7,4 @@ ios/*.xcodeproj
 ios/build/
 ios/DerivedData/
 ios/Harness/Harness.entitlements
+ios/Harness/Info.plist
