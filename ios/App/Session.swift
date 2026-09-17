@@ -15,6 +15,7 @@ final class Session: NSObject, ObservableObject {
     @Published var state = "idle"
     @Published var live = ""
     @Published var listening = false
+    @Published var servingKeyboard = false  // this dictation belongs to a keyboard field, not the app screen
     var vocab = Vocab.cached()
 
     private let engine = AVAudioEngine()
@@ -33,6 +34,7 @@ final class Session: NSObject, ObservableObject {
     private var alive = false               // mic open + heartbeat running
     private var heartbeat: Timer?
     private var idleTimer: Timer?
+    private var audioObservers: [NSObjectProtocol] = []
 
     override init() {
         super.init()
@@ -89,6 +91,7 @@ final class Session: NSObject, ObservableObject {
         let current = RecordingRun(id: id, keyboard: keyboard)
         run = current
         dictId = id
+        servingKeyboard = keyboard
         finals = []; interim = ""
         Shared.defaults.removeObject(forKey: Shared.kFinal)
         publish("starting")
@@ -97,7 +100,7 @@ final class Session: NSObject, ObservableObject {
             guard let self = self, let run = self.run else { return }
             if run.expired(leaseUntil: Shared.leaseUntil(id: run.id)) { self.stop() }
         }
-        if alive { beginStream(token: current.token); return }
+        if alive && micRunning { beginStream(token: current.token); return }   // `alive` alone lied: iOS stops the engine behind our back
         AVAudioApplication.requestRecordPermission { [weak self] ok in
             DispatchQueue.main.async {
                 guard let self = self, let run = self.run, run.token == current.token,
@@ -111,7 +114,7 @@ final class Session: NSObject, ObservableObject {
                 }
                 self.alive = true
                 self.heartbeat?.invalidate()
-                self.heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in Shared.defaults.set(Date(), forKey: Shared.kAlive) }
+                self.heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.heartbeatTick() }
                 Shared.defaults.set(Date(), forKey: Shared.kAlive)
                 self.beginStream(token: current.token)
             }
@@ -180,7 +183,50 @@ final class Session: NSObject, ObservableObject {
     }
 
     // MARK: audio — the ONLY code that touches the microphone
+    /// The engine is the truth. iOS stops it on its own (a call, Siri, another
+    /// app's mic, a route change, a media-services reset) and never restarts
+    /// it; `alive` must never outlive the hardware, or "listening" streams
+    /// silence and the keyboard skips the hop that would have fixed it.
+    private var micRunning: Bool { engine.isRunning }
+
+    /// Every beat: a running engine is advertised to the keyboard; a stopped
+    /// one is reopened in place, or the mic is declared closed (heartbeat off,
+    /// so the next keyboard start hops through the app and opens it again).
+    private func heartbeatTick() {
+        guard alive else { return }
+        if micRunning { Shared.defaults.set(Date(), forKey: Shared.kAlive); return }
+        do {
+            try openMic()
+            Shared.defaults.set(Date(), forKey: Shared.kAlive)
+        } catch {
+            closeMic()
+            if listening { fail("microphone lost — tap listen") }
+        }
+    }
+
+    private func observeAudio() {
+        guard audioObservers.isEmpty else { return }
+        let nc = NotificationCenter.default
+        let tick: (Notification) -> Void = { [weak self] _ in self?.heartbeatTick() }
+        audioObservers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
+            guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            self?.heartbeatTick()
+        })
+        audioObservers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main, using: tick))
+        audioObservers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main, using: tick))
+    }
+
+    private func teardownEngine() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        engine.reset()
+        converter = nil
+    }
+
     private func openMic() throws {
+        teardownEngine()                      // a dead engine may still hold the tap; installing a second one crashes
+        observeAudio()
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .allowBluetoothHFP, .defaultToSpeaker])
         try s.setActive(true)
@@ -216,15 +262,12 @@ final class Session: NSObject, ObservableObject {
     }
 
     private func closeMic() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        engine.reset()
-        converter = nil
+        teardownEngine()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         heartbeat?.invalidate(); heartbeat = nil
         Shared.defaults.removeObject(forKey: Shared.kAlive)
         alive = false
-        publish("idle")
+        if !listening { publish("idle") }     // mid-dictation the caller reports the error instead
     }
 
     // MARK: deepgram

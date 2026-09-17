@@ -37,7 +37,9 @@ struct ContentView: View {
                 Text(session.live).font(.body).multilineTextAlignment(.center).padding(.horizontal)
             }
             Text(session.listening
-                 ? "Listening. Swipe back to the app you were typing in — the clawd keyboard is filling in your words."
+                 ? (session.servingKeyboard
+                    ? "Listening. Swipe back to the app you were typing in — the clawd keyboard is filling in your words."
+                    : "Listening here. These words stay on this screen; a keyboard only takes its own dictation.")
                  : "Add the clawd keyboard: Settings → General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full Access.\n\nThe first keyboard use hops through this app for a second so the mic can open — iOS allows nothing else. After that the mic stays open (orange dot) so there is no hop; audio only streams while the keyboard dot is red.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
             HStack(spacing: 14) {

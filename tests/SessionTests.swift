@@ -8,7 +8,7 @@ enum Secrets {
     static let docsCredential = ""
     static let deepgramKey = ""
 }
-enum TestIO { static var micOpens = 0 }
+enum TestIO { static var micOpens = 0; static var micDead = false }
 enum AVAudioApplication {
     static var requests: [(Bool) -> Void] = []
     static func requestRecordPermission(_ callback: @escaping (Bool) -> Void) { requests.append(callback) }
@@ -68,6 +68,15 @@ final class StubURLSessionWebSocketTask {
         drain()
         precondition(!s.listening && s.state.hasPrefix("error:"), "connection error must remain visible")
 
+        TestIO.micDead = true                 // iOS stopped the engine (call, Siri, route change) while the mic was "open"
+        s.start()
+        precondition(!s.listening && s.state == "starting", "a dead engine must not be streamed from")
+        AVAudioApplication.answer(3)
+        drain()
+        precondition(s.listening && TestIO.micOpens == 2, "a dead engine must be reopened")
+        s.stop()
+        drain(1.3)
+
         s.start(id: "missing-lease")
         precondition(!s.listening, "unowned start must be rejected")
         Shared.renewLease(id: "keyboard")
@@ -111,6 +120,6 @@ final class StubURLSessionWebSocketTask {
         precondition(vocab.fix("ETH, skills") == "ethskills")
         precondition(vocab.fix("ETH. skills") == "ethskills")
         precondition(vocab.fix("ETH skills") == "ethskills")
-        print("PASS: startup cancellation, stale permission/socket/flush, error display, lease expiry, recording limit, audio gate, field/cursor ownership, punctuation")
+        print("PASS: startup cancellation, dead-engine reopen, stale permission/socket/flush, error display, lease expiry, recording limit, audio gate, field/cursor ownership, punctuation")
     }
 }

@@ -13,7 +13,9 @@ with tempfile.TemporaryDirectory(prefix="dictate-tests-") as directory:
     start = session.index("    // MARK: audio")
     end = session.index("    // MARK: deepgram", start)
     session = session[:start] + """
-    private func openMic() throws { TestIO.micOpens += 1 }
+    private var micRunning: Bool { alive && !TestIO.micDead }
+    private func heartbeatTick() { Shared.defaults.set(Date(), forKey: Shared.kAlive) }
+    private func openMic() throws { TestIO.micOpens += 1; TestIO.micDead = false }
     private func closeMic() { alive = false }
 """ + session[end:]
     session = session.replace("URLSession", "StubURLSession")
