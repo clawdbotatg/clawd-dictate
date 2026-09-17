@@ -365,10 +365,8 @@ class App:
                 self.toggle()
             else:
                 self.last_ctrl = now
-        elif key == Key.esc and self.cur and not self.typist.busy:
-            self.cur.stop()
-        elif key == Key.enter and self.cur and not self.typist.busy:
-            self.restart("Enter")             # Enter reaches the app (sends the message); we keep listening for the next one
+        elif key in (Key.enter, Key.esc) and self.cur and not self.typist.busy:
+            self.cur.stop()                   # Enter still reaches the app (sends the message) — we just stop listening (Austin, 09-17: Enter STOPS)
 
     def toggle(self):
         if self.cur:
