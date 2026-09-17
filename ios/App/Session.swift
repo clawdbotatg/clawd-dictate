@@ -2,21 +2,9 @@
 // keyterm-biased; results (interim/final, rules applied) go to the App Group
 // mailbox for the keyboard.
 //
-// THE GUARANTEE (Austin, 2026-09-15): audio reaches Deepgram ONLY while a
-// dictation is live (the keyboard's red dot). Read this file top to bottom
-// and hold it to these facts:
-//   1. The ONLY line that sends audio anywhere is inside the mic tap in
-//      openMic(), and it refuses unless `listening` is true AND a socket exists.
-//   2. The socket exists only between openDeepgram() (called by start) and
-//      commit() (1.2 s after stop, to flush the transcript of audio already
-//      sent). Between dictations `ws` is nil — there is nothing to send to.
-//   3. stop() sets `listening = false` first, synchronously; from that instant
-//      the tap drops every buffer, then the socket is closed.
-// The MICROPHONE, though, stays open between dictations (the orange dot): iOS
-// refuses to start a mic from the background, so releasing it would mean a hop
-// through this app on every keyboard use (tried 09-15, Austin: "I want good
-// UX"). Open mic + no socket = the hardware listens, nothing leaves the phone.
-// The mic closes after idleMinutes without a dictation, or on Quit.
+// Idle audio is discarded. A keyboard must renew its lease to keep streaming;
+// stop cancels pending startup and clears the audio gate before flushing text.
+// The mic stays open between dictations so the next use needs no app hop.
 import AVFoundation
 import Foundation
 import UIKit
@@ -31,6 +19,10 @@ final class Session: NSObject, ObservableObject {
 
     private let engine = AVAudioEngine()
     private var ws: URLSessionWebSocketTask?
+    private let audioGate = AudioGate<URLSessionWebSocketTask>()
+    private var run: RecordingRun?
+    private var watchdog: Timer?
+    var canStop: Bool { listening || state == "starting" }
     private var converter: AVAudioConverter?
     private var finals: [String] = []
     private var interim = ""
@@ -65,7 +57,8 @@ final class Session: NSObject, ObservableObject {
         guard cmd != lastCmd, !cmd.isEmpty else { return }
         lastCmd = cmd
         let id = String(cmd.split(separator: ":", maxSplits: 1).last ?? "")
-        if cmd.hasPrefix("start") { start(id: id) } else if cmd.hasPrefix("stop") { stop() }
+        if cmd.hasPrefix("start:") { start(id: id) }
+        else if cmd.hasPrefix("stop:"), run?.id == id { stop() }
     }
 
     // MARK: words
@@ -89,41 +82,50 @@ final class Session: NSObject, ObservableObject {
 
     // MARK: start / stop
     func start(id: String = "app") {
-        if listening {
-            if id == dictId { return }        // the hop re-issues the start we're already serving
-            finishNow()                       // another field's dictation: close it, its text stays where it was typed
-        }
+        let keyboard = id != "app"
+        guard !keyboard || (Shared.leaseUntil(id: id) ?? .distantPast) > Date() else { return }
+        if let current = run, current.id == id, current.phase != .stopping { return }
+        finishNow()
+        let current = RecordingRun(id: id, keyboard: keyboard)
+        run = current
         dictId = id
         finals = []; interim = ""
-        Shared.defaults.set(Date(), forKey: Shared.kStarted)
+        Shared.defaults.removeObject(forKey: Shared.kFinal)
         publish("starting")
-        refreshVocab()                        // a word added in the harness ⚙️ reaches the NEXT dictation
-        if alive {                            // mic already open: just open the socket
-            openDeepgram()
-            listening = true
-            publish("listening")
-            armIdle()
-            return
+        refreshVocab()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self = self, let run = self.run else { return }
+            if run.expired(leaseUntil: Shared.leaseUntil(id: run.id)) { self.stop() }
         }
+        if alive { beginStream(token: current.token); return }
         AVAudioApplication.requestRecordPermission { [weak self] ok in
             DispatchQueue.main.async {
-                guard let self = self else { return }
-                guard ok else { self.publish("error: microphone not allowed — Settings → clawd dictate → Microphone"); return }
+                guard let self = self, let run = self.run, run.token == current.token,
+                      run.phase == .starting else { return }
+                guard !run.expired(leaseUntil: Shared.leaseUntil(id: run.id)) else { self.stop(); return }
+                guard ok else { self.fail("microphone not allowed — Settings → clawd dictate → Microphone"); return }
                 do { try self.openMic() } catch {
-                    // iOS won't let a background app START the mic — the keyboard hops us to the front and asks again
-                    self.publish("error: wake")
+                    self.closeMic()
+                    self.fail("wake")
                     return
                 }
                 self.alive = true
                 self.heartbeat?.invalidate()
                 self.heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in Shared.defaults.set(Date(), forKey: Shared.kAlive) }
                 Shared.defaults.set(Date(), forKey: Shared.kAlive)
-                self.openDeepgram()
-                self.listening = true
-                self.publish("listening")
-                self.armIdle()
+                self.beginStream(token: current.token)
             }
         }
+    }
+
+    private func beginStream(token: UUID) {
+        guard run?.token == token, run?.phase == .starting else { return }
+        openDeepgram()
+        run?.phase = .streaming
+        listening = true
+        audioGate.set(ws)
+        publish("listening")
+        armIdle()
     }
 
     private func armIdle() {
@@ -135,30 +137,45 @@ final class Session: NSObject, ObservableObject {
     }
 
     func stop() {
-        guard listening else { return }
-        listening = false                     // (3) FIRST: the tap drops every buffer from here on
+        audioGate.set(nil)
+        listening = false
+        guard let current = run, current.phase != .stopping else { return }
+        run?.phase = .stopping           // invalidates the permission callback too
+        watchdog?.invalidate(); watchdog = nil
+        Shared.releaseLease(id: current.id)
+        guard ws != nil else { commit(); armIdle(); return }
         ws?.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.commit() }   // (2) flush the tail, then the socket is gone
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self = self, self.run?.token == current.token else { return }
+            self.commit()
+        }
         armIdle()
     }
 
-    /// End the open dictation at once (no tail): what's typed so far is its final.
     private func finishNow() {
+        audioGate.set(nil)
         listening = false
-        ws?.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
-        commit()
+        if run != nil { commit() }
     }
 
-    private func commit() {
+    private func fail(_ message: String) {
+        audioGate.set(nil)
+        listening = false
+        commit(state: "error: " + message)
+        armIdle()
+    }
+
+    private func commit(state: String = "idle") {
         guard !listening else { return }
+        watchdog?.invalidate(); watchdog = nil
         let text = vocab.fix((finals + (interim.isEmpty ? [] : [interim])).joined(separator: " "))
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
-        interim = ""
+        interim = ""; finals = []
         Shared.defaults.set(text, forKey: Shared.kFinal)
-        publish("idle")
         ws?.cancel(with: .normalClosure, reason: nil); ws = nil
-        finals = []
+        run = nil
+        publish(state)
         live = text
     }
 
@@ -172,19 +189,27 @@ final class Session: NSObject, ObservableObject {
         let outFmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
         converter = AVAudioConverter(from: inFmt, to: outFmt)
         input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buf, _ in
-            // (1) the ONLY send of audio anywhere — and only while listening, to an open socket
-            guard let self = self, self.listening, let conv = self.converter, let ws = self.ws else { return }
-            let frames = AVAudioFrameCount(Double(buf.frameLength) * 16000 / inFmt.sampleRate) + 16
-            guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: frames) else { return }
-            var err: NSError?
-            var consumed = false
-            conv.convert(to: out, error: &err) { _, status in
-                if consumed { status.pointee = .noDataNow; return nil }
-                consumed = true; status.pointee = .haveData; return buf
+            guard let self = self else { return }
+            self.audioGate.withTarget { ws in
+                guard let conv = self.converter else { return }
+                let frames = AVAudioFrameCount(Double(buf.frameLength) * 16000 / inFmt.sampleRate) + 16
+                guard let out = AVAudioPCMBuffer(pcmFormat: outFmt, frameCapacity: frames) else { return }
+                var err: NSError?
+                var consumed = false
+                conv.convert(to: out, error: &err) { _, status in
+                    if consumed { status.pointee = .noDataNow; return nil }
+                    consumed = true; status.pointee = .haveData; return buf
+                }
+                guard err == nil, out.frameLength > 0, let ch = out.int16ChannelData else { return }
+                let data = Data(bytes: ch[0], count: Int(out.frameLength) * 2)
+                ws.send(.data(data)) { [weak self] error in
+                    guard error != nil else { return }
+                    DispatchQueue.main.async {
+                        guard let self = self, self.ws === ws, self.listening else { return }
+                        self.fail("connection lost — tap to retry")
+                    }
+                }
             }
-            guard err == nil, out.frameLength > 0, let ch = out.int16ChannelData else { return }
-            let data = Data(bytes: ch[0], count: Int(out.frameLength) * 2)
-            ws.send(.data(data)) { _ in }
         }
         engine.prepare()
         try engine.start()
@@ -225,25 +250,25 @@ final class Session: NSObject, ObservableObject {
 
     private func receive(_ task: URLSessionWebSocketTask) {
         task.receive { [weak self] result in
-            guard let self = self, self.ws === task else { return }
-            switch result {
-            case .failure(let e):
-                DispatchQueue.main.async {
-                    if self.listening { self.listening = false; self.publish("error: deepgram — \(e.localizedDescription)"); self.commit() }
-                }
-                return
-            case .success(let msg):
-                if case .string(let s) = msg, let d = s.data(using: .utf8),
-                   let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], j["type"] as? String == "Results" {
-                    let t = ((((j["channel"] as? [String: Any])?["alternatives"] as? [[String: Any]])?.first)?["transcript"] as? String ?? "")
-                        .trimmingCharacters(in: .whitespaces)
-                    let isFinal = j["is_final"] as? Bool ?? false
-                    DispatchQueue.main.async {
-                        if isFinal { if !t.isEmpty { self.finals.append(t) }; self.interim = "" } else { self.interim = t }
+            DispatchQueue.main.async {
+                guard let self = self, self.ws === task else { return }
+                switch result {
+                case .failure(let e):
+                    if self.listening { self.fail("deepgram — \(e.localizedDescription)") }
+                    else { self.commit() }
+                case .success(let msg):
+                    if case .string(let s) = msg, let d = s.data(using: .utf8),
+                       let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], j["type"] as? String == "Results" {
+                        let t = ((((j["channel"] as? [String: Any])?["alternatives"] as? [[String: Any]])?.first)?["transcript"] as? String ?? "")
+                            .trimmingCharacters(in: .whitespaces)
+                        if j["is_final"] as? Bool == true {
+                            if !t.isEmpty { self.finals.append(t) }
+                            self.interim = ""
+                        } else { self.interim = t }
                         self.publish()
                     }
+                    self.receive(task)
                 }
-                self.receive(task)
             }
         }
     }

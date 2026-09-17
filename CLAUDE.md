@@ -47,11 +47,10 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
   Darwin notifications `com.clawd.dictate.cmd|text`. The first start opens
   the app via `clawddictate://start` — ONLY `EnvironmentValues().openURL` /
   a SwiftUI `Link` work on iOS 18+ (responder-chain and extensionContext
-  hacks are dead, see `openApp`); after that the app stays awake 60 min and starts at once.
-- **Mic between dictations: OPEN (orange dot), socket CLOSED.** Austin (09-15) wants no hop, and iOS refuses to start a mic in the background, so the mic stays open 24 h after the last dictation; the Deepgram socket exists only during a dictation and the tap sends only while `listening`. Read the guarantee comment atop Session.swift. Releasing the mic was tried and rejected (hop on every keyboard use). Audio streams to Deepgram only while listening — the tap drops buffers otherwise.
+  hacks are dead, see `openApp`); after that the mic stays open 24 h and starts at once.
+- **Mic between dictations: OPEN (orange dot), socket CLOSED.** Austin (09-15) wants no hop, and iOS refuses to start a mic in the background, so the mic stays open 24 h after the last dictation; the Deepgram socket exists only during a dictation and the locked audio gate controls sends. Stop invalidates pending starts; callbacks are scoped to a run token. Keyboard leases expire after 6 s (20 s for the app hop), and each recording is capped at 10 min. Releasing the mic was tried and rejected (hop on every keyboard use). Audio streams to Deepgram only while listening — the tap drops buffers otherwise.
 - The keyboard is a plain QWERTY with a bar on top (red dot = listening).
-  It auto-starts when it appears if the app is awake; typing a key ends the
-  interim's ownership so dictation never deletes typed text.
+  It auto-starts when it appears. Each keyboard owns a UUID and a text-field/cursor anchor; no adoption by age. A field/cursor/context change pauses dictation. Start/stop mailbox commands use that same UUID; wake URLs carry it as `?id=…`. Typing a key commits the interim before appending.
 - Build: `sh ios/gen-secrets.sh` (Secrets.swift, gitignored — from `~/.config/clawd-dictate/env`: HARNESS_URL, CAL_URL, SLOP_URL, DEEPGRAM_API_KEY, DOCS_CREDENTIAL) → `cd ios &&
   xcodegen generate` → `xcodebuild … -destination 'id=00008150-001205C63A04401C'
   -allowProvisioningUpdates build` → `xcrun devicectl device install app

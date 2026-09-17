@@ -14,8 +14,11 @@ struct ClawdDictateApp: App {
             ContentView().environmentObject(session)
                 .onOpenURL { url in
                     guard url.scheme == "clawddictate" else { return }
-                    if url.host == "start" { session.start(id: Shared.defaults.string(forKey: Shared.kCmd)?.split(separator: ":").last.map(String.init) ?? "app") }
-                    if url.host == "stop" { session.stop() }
+                    guard url.host == "start",
+                          let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "id" })?.value,
+                          Shared.defaults.string(forKey: Shared.kCmd) == "start:" + id,
+                          (Shared.leaseUntil(id: id) ?? .distantPast) > Date() else { return }
+                    session.start(id: id)
                 }
         }
     }
@@ -38,7 +41,7 @@ struct ContentView: View {
                  : "Add the clawd keyboard: Settings → General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full Access.\n\nThe first keyboard use hops through this app for a second so the mic can open — iOS allows nothing else. After that the mic stays open (orange dot) so there is no hop; audio only streams while the keyboard dot is red.")
                 .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 24)
             HStack(spacing: 14) {
-                Button(session.listening ? "stop" : "listen") { session.listening ? session.stop() : session.start() }
+                Button(session.canStop ? "stop" : "listen") { session.canStop ? session.stop() : session.start() }
                     .buttonStyle(.borderedProminent)
                 Button("refresh words") { session.refreshVocab() }.buttonStyle(.bordered)
             }

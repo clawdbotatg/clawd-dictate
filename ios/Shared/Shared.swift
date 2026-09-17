@@ -15,7 +15,6 @@ enum Shared {
     static let kInterim = "text.interim"         // the current segment, revised as it goes
     static let kDone = "text.done"               // the finished segments of THIS dictation so far (rules applied)
     static let kDict = "dict.id"                 // which dictation the text keys describe — a keyboard only takes its own
-    static let kStarted = "dict.started"         // Date: when that dictation began (a keyboard re-appearing right after a hop adopts it)
     static let kFinal = "text.final"             // the finished text of the last dictation
     static let kSeq = "text.seq"                 // bumps on every text/state change
     static let kWords = "words.txt"              // cached shared list
@@ -51,14 +50,21 @@ enum Shared {
         guard let d = defaults.object(forKey: kAlive) as? Date else { return false }
         return Date().timeIntervalSince(d) < 6
     }
-    /// A dictation the app began within the last few seconds — the one a hop
-    /// just started for the keyboard that is re-appearing now.
-    static var youngDictation: String? {
-        let st = defaults.string(forKey: kState) ?? "idle"
-        guard st == "listening" || st == "starting", let d = defaults.object(forKey: kStarted) as? Date,
-              Date().timeIntervalSince(d) < 20, let id = defaults.string(forKey: kDict), !id.isEmpty else { return nil }
-        return id
+    static let kLease = "keyboard.lease"
+
+    static func renewLease(id: String, seconds: TimeInterval = 6) {
+        defaults.set(["id": id, "until": Date().addingTimeInterval(seconds)], forKey: kLease)
     }
+
+    static func leaseUntil(id: String) -> Date? {
+        guard let lease = defaults.dictionary(forKey: kLease), lease["id"] as? String == id else { return nil }
+        return lease["until"] as? Date
+    }
+
+    static func releaseLease(id: String) {
+        if leaseUntil(id: id) != nil { defaults.removeObject(forKey: kLease) }
+    }
+
 }
 
 /// The word list, parsed exactly like the harness page: plain lines are
@@ -117,7 +123,7 @@ struct Vocab {
         for (from, to) in s.rules + b.rules {
             let f = from.trimmingCharacters(in: .whitespaces)
             if f.isEmpty { continue }
-            let esc = NSRegularExpression.escapedPattern(for: f).replacingOccurrences(of: #"\ "#, with: #"[\s,.]+"#)   // "ETH, skills" too
+            let esc = f.split(whereSeparator: { $0.isWhitespace }).map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: #"[\s,.]+"#)   // "ETH, skills" too
             if let rx = try? NSRegularExpression(pattern: #"\b"# + esc + #"\b"#, options: .caseInsensitive) {
                 v.rules.append((rx, to))
             }

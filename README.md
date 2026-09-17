@@ -51,8 +51,8 @@ Log: `~/Library/Logs/clawd-dictate.log`. Stop: `sh install.sh --stop`.
 iOS keyboard extensions can't touch the microphone, so this is the Wispr Flow
 shape: **clawd keys** (the keyboard: a 🎤, live text, space/delete/return) asks
 **clawd dictate** (the app) to listen. The first tap opens the app so the mic
-can start (Apple's rule — swipe back); after that the app listens from the
-background for 10 minutes, so the next taps start at once. Same Deepgram
+can start (Apple's rule — swipe back); after that the app holds the mic open for 24 hours, so the next taps start
+at once. Idle audio is discarded; active dictation streams to Deepgram. Same Deepgram
 nova-3, same shared word list (read-only relay credential, `stt-words`
 only) plus the harness's built-in terms and rules, pulled from GitHub.
 
@@ -66,3 +66,22 @@ Needs Xcode signed into your Apple ID (automatic signing, team XX7QP5899Z)
 and the phone plugged in with Developer Mode on. On the phone: Settings →
 General → Keyboard → Keyboards → Add New Keyboard → clawd keys → Allow Full
 Access. Open the app once so it can ask for the microphone.
+
+## Recording safeguards
+
+The phone keeps the mic open between dictations, but discards idle audio.
+Stopping also cancels a pending microphone start. If the keyboard stops
+responding, streaming ends after its six-second lease expires (20 seconds
+while opening the app). Each dictation has a ten-minute limit.
+
+Phone dictation pauses if the field, cursor, selection, or surrounding text
+changes. Tap the dot to resume. Return stops immediately and discards late
+results; use **done** to wait for the last words. Returning from the app only
+resumes the same keyboard's dictation in the same field.
+
+Mac dictation no longer writes speech snippets to its log. Existing logs are
+not erased. The Mac cursor-movement issue still needs a separate fix.
+
+Run `python3 tests/run.py` on macOS for recording lifecycle, audio gate,
+field ownership, and vocabulary regressions. These tests stub microphone and
+network calls; an iOS build and device check are still required for the UI.

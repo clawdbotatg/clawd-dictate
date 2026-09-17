@@ -2,11 +2,11 @@
 //
 // The bar above the keys is the only sign: a red dot while dictating, the
 // live text beside it. Bringing the keyboard up starts dictation on its own
-// — no tap. When the clawd dictate app is asleep (it stays awake an hour
+// — no tap. When the clawd dictate app is asleep (it holds the mic for 24 hours
 // after the last use) that first start hops into the app once (Apple's rule
 // for custom keyboards, which can't hear) — swipe back. Tap the dot to pause
 // / resume.
-// Dismissing the keyboard stops the mic.
+// Dismissing the keyboard stops streaming; idle mic buffers are discarded.
 //
 // It can't hear: the app records, streams to Deepgram with the shared word
 // list, and hands text back through the App Group. The interim is typed and
@@ -20,6 +20,8 @@ final class KeyboardViewController: UIInputViewController {
     private let liveLabel = UILabel()
     private let doneBtn = UIButton(type: .system)
     private var wakeHost: UIViewController?   // a SwiftUI Link — the one launch path iOS 18+ still allows a keyboard
+    private var visible = false
+    private var anchor: TextAnchor?
     private var hopping = false               // we sent the user through the app: the keyboard's disappearance is NOT a stop
     private var doneRequested = false
     private var myDict = ""                // this keyboard's dictation id — text for any other is not ours
@@ -53,33 +55,65 @@ final class KeyboardViewController: UIInputViewController {
         buildBar()
         buildKeys()
         textObserver = Shared.observe(Shared.noteText) { [weak self] in self?.pull() }
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in self?.pull() }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { [weak self] _ in self?.tick() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        written = ""; committed = 0
-        lastSeq = Shared.defaults.integer(forKey: Shared.kSeq)   // don't replay a previous dictation's final
-        if !hasFullAccess { setBar("needs Full Access: Settings → Keyboards → clawd keys", on: false); return }
+        visible = true
+        guard hasFullAccess else { abandon(); setBar("needs Full Access: Settings → Keyboards → clawd keys", on: false); return }
+        // Only this controller, returning to its original field, can resume its hop.
+        let returning = hopping && listening &&
+            anchor?.canResume(id: myDict, publishedID: Shared.defaults.string(forKey: Shared.kDict),
+                              current: currentAnchor, selected: textDocumentProxy.selectedText) == true &&
+            (Shared.leaseUntil(id: myDict) ?? .distantPast) > Date()
         hopping = false
-        // Back from the hop: the app is already listening for us — adopt that
-        // dictation instead of starting another (which would stop it, and a
-        // stopped mic can't restart from the background: that was the flapping).
-        if let id = Shared.youngDictation {
-            myDict = id; listening = true; written = ""; committed = 0
-            lastSeq = -1                                   // take its text from the top
-            setBar("listening", on: true)
-            return
+        if returning {
+            Shared.renewLease(id: myDict)
+            lastSeq = -1
+            pull()
+        } else {
+            abandon()
+            if wantListening { startListening() }
+            else { setBar("paused — tap ● to dictate", on: false) }
         }
-        // Austin (09-15): "recording as soon as I bring it up" — always. Every
-        // start hops through clawd dictate (iOS won't start a mic in the background).
-        if wantListening { startListening() }
-        else { setBar("paused — tap ● to dictate", on: false) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if listening && !hopping { stopListening(silent: true) }   // the hop dismisses us — that's not a stop
+        visible = false
+        if !hopping { abandon() }
+    }
+
+    private var currentAnchor: TextAnchor {
+        TextAnchor(document: textDocumentProxy.documentIdentifier,
+                   before: textDocumentProxy.documentContextBeforeInput,
+                   after: textDocumentProxy.documentContextAfterInput)
+    }
+
+    private var ownsCursor: Bool {
+        anchor?.permits(currentAnchor, selected: textDocumentProxy.selectedText) == true
+    }
+
+    private func rememberCursor() { anchor = currentAnchor }
+
+    private func abandon() {
+        if !myDict.isEmpty { stopListening(silent: true) }
+        myDict = ""; written = ""; committed = 0
+        doneRequested = false
+        hopping = false
+        hideWake()
+    }
+
+    private func tick() {
+        guard visible else { return }
+        if !myDict.isEmpty && !ownsCursor {
+            abandon()
+            setBar("cursor moved — tap ● to dictate", on: false)
+            return
+        }
+        if listening { Shared.renewLease(id: myDict, seconds: hopping ? 20 : 6) }
+        pull()
     }
 
     // MARK: the bar
@@ -149,21 +183,28 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: dictation control
     private func startListening() {
-        let nonce = String(Int(Date().timeIntervalSince1970 * 1000))
+        let nonce = UUID().uuidString
         written = ""; committed = 0
         myDict = nonce
+        rememberCursor()
+        guard ownsCursor else {
+            myDict = ""
+            setBar("place the cursor in an editable field", on: false)
+            return
+        }
+        Shared.renewLease(id: myDict, seconds: Shared.aliveNow ? 6 : 20)
         Shared.defaults.set("start:" + nonce, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)
         listening = true
         if Shared.aliveNow { setBar("listening", on: true); return }   // mic already open in the app: no hop
         hopping = true
         setBar("starting the mic in clawd dictate… swipe back here", on: true)
-        openApp(URL(string: "clawddictate://start")!)
+        openApp(URL(string: "clawddictate://start?id=" + myDict)!)
     }
 
     private func stopListening(silent: Bool) {
-        let nonce = String(Int(Date().timeIntervalSince1970 * 1000))
-        Shared.defaults.set("stop:" + nonce, forKey: Shared.kCmd)
+        Shared.releaseLease(id: myDict)
+        Shared.defaults.set("stop:" + myDict, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)
         listening = false
         if silent { return }
@@ -182,9 +223,12 @@ final class KeyboardViewController: UIInputViewController {
     /// still works: SwiftUI's openURL environment action, and a SwiftUI Link.
     /// Try the action; if the app doesn't come alive, show a Link to tap.
     private func openApp(_ url: URL) {
+        Shared.renewLease(id: myDict, seconds: 20)
+        let id = myDict
         EnvironmentValues().openURL(url)
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            guard let self = self, Shared.youngDictation == nil else { return }
+            guard let self = self, self.visible, self.listening, self.myDict == id else { return }
+            if Shared.defaults.string(forKey: Shared.kDict) == id && Shared.defaults.string(forKey: Shared.kState) == "listening" { return }
             self.showWake(url)
         }
     }
@@ -217,6 +261,8 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: text from the app
     private func pull() {
+        guard visible, !myDict.isEmpty else { return }
+        guard ownsCursor else { abandon(); setBar("cursor moved — tap ● to dictate", on: false); return }
         let d = Shared.defaults
         let seq = d.integer(forKey: Shared.kSeq)
         guard seq != lastSeq else { return }
@@ -225,14 +271,17 @@ final class KeyboardViewController: UIInputViewController {
         guard (d.string(forKey: Shared.kDict) ?? "") == myDict else { return }   // another field's dictation — not ours
         let interim = d.string(forKey: Shared.kInterim) ?? ""
         if state == "error: wake" {                 // iOS won't give a background app the mic: hop (once)
-            if listening && !hopping { hopping = true; setBar("starting the mic in clawd dictate… swipe back here", on: true); openApp(URL(string: "clawddictate://start")!) }
+            if listening && !hopping { hopping = true; setBar("starting the mic in clawd dictate… swipe back here", on: true); openApp(URL(string: "clawddictate://start?id=" + myDict)!) }
             return
         }
-        if state.hasPrefix("error") { listening = false; setBar(state, on: false); return }
+        if state.hasPrefix("error") {
+            Shared.releaseLease(id: myDict)
+            listening = false; setBar(state, on: false)
+            return
+        }
         let done = d.string(forKey: Shared.kDone) ?? ""
         if state == "listening" || state == "starting" {
             hideWake()
-            if state == "listening" { hopping = false }
             guard listening else { return }          // not ours (another field's keyboard asked)
             let full = done + (interim.isEmpty ? "" : (done.isEmpty ? "" : " ") + interim)
             setBar("listening", on: true)             // the words are in the field — the bar just says so
@@ -241,10 +290,11 @@ final class KeyboardViewController: UIInputViewController {
             let final = d.string(forKey: Shared.kFinal) ?? ""
             if !final.isEmpty {
                 sync(to: final)
-                if !written.isEmpty { textDocumentProxy.insertText(" ") }
+                if !written.isEmpty { textDocumentProxy.insertText(" "); rememberCursor() }
                 d.set("", forKey: Shared.kFinal)
                 setBar("paused — tap ● to dictate", on: false)
             }
+            Shared.releaseLease(id: myDict)
             written = ""; committed = 0
             if doneRequested { doneRequested = false; advanceToNextInputMode(); return }
             if listening {                            // the app ended it (error) — we're paused now
@@ -260,6 +310,7 @@ final class KeyboardViewController: UIInputViewController {
     /// rewrites an earlier word ("on chain" → "onchain") reaches back exactly
     /// as far as it must. Text the user typed by hand is behind `committed`.
     private func sync(to target: String) {
+        guard ownsCursor else { abandon(); return }
         let want = String(target.dropFirst(committed))
         if want == written { return }
         let common = zip(written, want).prefix { $0 == $1 }.count
@@ -267,11 +318,13 @@ final class KeyboardViewController: UIInputViewController {
         let tail = String(want.dropFirst(common))
         if !tail.isEmpty { textDocumentProxy.insertText(tail) }
         written = want
+        rememberCursor()
     }
 
     /// The user typed: everything dictated so far is theirs now. Dictation
     /// resumes appending after it and never deletes back into it.
     private func handTyped() {
+        if !ownsCursor { abandon(); return }
         committed += written.count
         written = ""
     }
@@ -368,17 +421,24 @@ final class KeyboardViewController: UIInputViewController {
         guard let t = sender.title(for: .normal) else { return }
         handTyped()                                   // typing wins: dictation never deletes back into your keys
         textDocumentProxy.insertText(t)
+        rememberCursor()
         if shifted && !symbols { shifted = false; layoutKeys() }
     }
     @objc private func tapShift() { if symbols { return }; shifted.toggle(); layoutKeys() }
     @objc private func tapSymbols() { symbols.toggle(); shifted = false; layoutKeys() }
-    @objc private func tapBackspace() { handTyped(); textDocumentProxy.deleteBackward() }
-    @objc private func tapSpace() { handTyped(); textDocumentProxy.insertText(" ") }
-    @objc private func tapReturn() { if listening { wantListening = false; stopListening(silent: false) }; handTyped(); textDocumentProxy.insertText("\n") }
+    @objc private func tapBackspace() { handTyped(); textDocumentProxy.deleteBackward(); rememberCursor() }
+    @objc private func tapSpace() { handTyped(); textDocumentProxy.insertText(" "); rememberCursor() }
+    @objc private func tapReturn() {
+        wantListening = false
+        abandon()   // Return can submit the field; never insert a late final into the next one.
+        textDocumentProxy.insertText("\n")
+        setBar("paused — tap ● to dictate", on: false)
+    }
     @objc private func tapGlobe() { advanceToNextInputMode() }
     @objc private func tapMacro(_ sender: UIButton) {
         guard let text = sender.accessibilityLabel else { return }
         handTyped()
         textDocumentProxy.insertText(text)
+        rememberCursor()
     }
 }

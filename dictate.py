@@ -328,7 +328,7 @@ class App:
         self.cur = None
         if text is not None:
             self.typist.sync(text)
-            log("typed:", text[:80])
+            log("dictation complete")
         self.typist.reset()
         self.ui.hide_after(0.2)
 
