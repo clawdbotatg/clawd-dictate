@@ -104,7 +104,16 @@ before guessing at any phone problem.
   target → Signing & Capabilities → Team = Austin Griffith; the profile lands
   in `~/Library/Developer/Xcode/UserData/Provisioning Profiles/` and every
   later build works from here without the account (why the dictate app never
-  needed this: its profiles date from 09-15).
+  needed this: its profiles date from 09-15). **Do this with the entitlements
+  file present and non-empty** — on 09-17 it had been emptied to `<dict/>`
+  when Austin picked the team, so Xcode minted a WILDCARD profile under a
+  different app-id prefix (QA8C2ZSAYY.*): no Associated Domains, the passkey
+  button did nothing (WebAuthn NotAllowedError, silent), and the later
+  correct build was refused as an upgrade (prefix mismatch) until
+  `xcrun devicectl device uninstall app --device … com.clawd.dictate.harness`.
+  **Before every install, verify the signed app:**
+  `codesign -d --entitlements :- build/Build/Products/Debug-iphoneos/ClawdHarness.app`
+  must show `webcredentials:<relay>` and `XX7QP5899Z.com.clawd.dictate.harness`.
   First run: the page's passkey gate → Face ID; first 🎤 tap → iOS's one
   mic prompt for "clawd harness"; after that, never.
 
