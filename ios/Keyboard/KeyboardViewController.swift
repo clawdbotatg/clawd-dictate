@@ -196,12 +196,7 @@ final class KeyboardViewController: UIInputViewController {
         let nonce = UUID().uuidString
         written = ""; committed = 0
         myDict = nonce
-        rememberCursor()
-        guard ownsCursor else {
-            myDict = ""
-            setBar("place the cursor in an editable field", on: false)
-            return
-        }
+        rememberCursor()          // the keyboard is up, so there is a field: no guard here (a second read of the proxy can differ from the first)
         Shared.renewLease(id: myDict, seconds: Shared.aliveNow ? 6 : 20)
         Shared.defaults.set("start:" + nonce, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)

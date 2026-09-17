@@ -112,7 +112,7 @@ final class StubURLSessionWebSocketTask {
         precondition(!anchor.canResume(id: "", publishedID: "", current: anchor, selected: nil))
         precondition(!anchor.permits(TextAnchor(document: UUID(), before: "hello", after: ""), selected: nil), "identical text in another field is not ours")
         precondition(!anchor.permits(TextAnchor(document: document, before: "hel", after: "lo"), selected: nil), "cursor movement must stop edits")
-        precondition(!anchor.permits(anchor, selected: "hello"), "selection must stop edits")
+        precondition(anchor.permits(anchor, selected: "hello"), "a reported selection is not trusted (web views lie)")
         let unknown = TextAnchor(document: document, before: nil, after: nil)
         precondition(unknown.permits(unknown, selected: nil), "an empty field (no context yet) must be dictatable")
         precondition(unknown.permits(TextAnchor(document: document, before: "", after: ""), selected: nil), "nil and empty context are the same field")

@@ -42,9 +42,11 @@ struct TextAnchor: Equatable {
     /// No context (nil) and an empty field ("") are the same thing: many hosts,
     /// web views included, report nil until the field has text. Refusing them
     /// refused every empty composer ("place the cursor in an editable field").
+    /// `selected` is ignored: web views report a selection where there is none
+    /// (the harness composer refused with "place the cursor…" on 09-17).
     func permits(_ current: TextAnchor, selected: String?) -> Bool {
         document == current.document && (before ?? "") == (current.before ?? "")
-            && (after ?? "") == (current.after ?? "") && (selected ?? "").isEmpty
+            && (after ?? "") == (current.after ?? "")
     }
 
     func canResume(id: String, publishedID: String?, current: TextAnchor, selected: String?) -> Bool {
