@@ -9,6 +9,7 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
 | harness mic (🎤 / space-hold) | `clawd-harness/index.html` | page's own WebSocket to Deepgram |
 | **Mac**: `clawd-dictate.app` | `dictate.py`, `app/`, `install.sh` | double-tap Control → Deepgram → typed live into the field that had focus at the start (`Focus` anchor: AX element + window title; a move ends that dictation and starts a new one where the cursor is; ); one Control tap, Enter or Escape stops |
 | **iPhone**: `clawd keys` keyboard + `clawd dictate` app | `ios/` | keyboard asks the app; the app records |
+| **iPhone**: `clawd harness` app | `ios/Harness/` | the harness PAGE in a native web view — same 🎤, no per-launch mic prompt |
 
 **`EXPECTATIONS.md` is the contract** (Austin, 09-17): always listening, one
 field = one dictation, fast, never breaks itself. Read it before touching any
@@ -70,6 +71,33 @@ before guessing at any phone problem.
   default toolchain is the CLT). Team is **XX7QP5899Z** (Xcode's account),
   not the X8PV53H794 on the old cert. Phone must be plugged in + unlocked.
 - Verified working on Austin's iPhone 17 Pro (iOS 26.6) on 2026-09-15.
+
+## iPhone: `clawd harness` (`ios/Harness/`, target `ClawdHarness`)
+
+- **Why it exists (Austin, 09-17):** the home-screen PWA asks for the mic on
+  EVERY launch (WebKit 215884; iOS has no "always allow" for web apps). A
+  native app is asked ONCE by iOS; `WebView.swift` then answers the page's
+  `getUserMedia` itself (`requestMediaCapturePermissionFor` → `.grant` for the
+  relay origin, mic only). Nothing else is native: one WKWebView on
+  `Secrets.relay`, fleet mode, the passkey, the page's own Deepgram socket.
+- **Passkey in a web view needs BOTH halves** or WebAuthn throws
+  NotAllowedError and the gate never opens: the app's Associated Domains
+  (`Harness.entitlements`, written by `gen-secrets.sh` from `HARNESS_URL`,
+  gitignored — the relay host must not be in the repo) and the relay naming
+  the app in `/.well-known/apple-app-site-association` (`FLEET_AASA_APPS` in
+  the box's `fleet.env` = `XX7QP5899Z.com.clawd.dictate.harness`;
+  `clawd-harness/fleet/test_aasa.py`). `?mode=developer` on the entitlement
+  makes a dev-signed build skip Apple's day-long AASA CDN cache.
+- Also fixed vs. a bare web view: 🔊 voice audio plays without a tap
+  (`mediaTypesRequiringUserActionForPlayback = []`); `window.open` /
+  `target=_blank` go to Safari; a killed content process reloads the page.
+  UA carries `clawd-harness-app` if the page ever needs to know.
+- No Web Speech fallback in WKWebView — a box without a Deepgram key has no
+  mic in the app (every fleet box has one except bambu).
+- Build (laptop, phone plugged in + unlocked), same recipe as the dictate app:
+  `sh ios/gen-secrets.sh && cd ios && xcodegen generate && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ClawdDictate.xcodeproj -scheme ClawdHarness -destination 'id=00008150-001205C63A04401C' -derivedDataPath build -allowProvisioningUpdates build && xcrun devicectl device install app --device 8B053FBC-B638-548F-B045-F5DDE25D3BDD build/Build/Products/Debug-iphoneos/ClawdHarness.app`.
+  First run: the page's passkey gate → Face ID; first 🎤 tap → iOS's one
+  mic prompt for "clawd harness"; after that, never.
 
 ## Rules
 

@@ -6,3 +6,4 @@ ios/Shared/Secrets.swift
 ios/*.xcodeproj
 ios/build/
 ios/DerivedData/
+ios/Harness/Harness.entitlements

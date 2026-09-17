@@ -9,6 +9,9 @@
 #   ClawdKeys     — the keyboard. One mic key + live text; tap → asks the app
 #                   (Darwin notification) or launches it (clawddictate://start)
 #                   the first time; inserts what the app transcribes.
+#   ClawdHarness  — the harness page in a native WKWebView (ios/Harness). Exists
+#                   because a home-screen PWA re-asks for the mic on every launch;
+#                   the app is asked once by iOS and grants the page itself.
 name: ClawdDictate
 options:
   bundleIdPrefix: com.clawd.dictate
@@ -83,3 +86,27 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.clawd.dictate.ios.keyboard
         SKIP_INSTALL: true
+  ClawdHarness:
+    type: application
+    platform: iOS
+    sources:
+      - path: Harness
+      - path: Shared/Secrets.swift
+    info:
+      path: Harness/Info.plist
+      properties:
+        CFBundleDisplayName: clawd harness
+        CFBundleName: ClawdHarness
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: clawd harness uses the microphone to dictate into your sessions; audio goes to Deepgram for transcription.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        ITSAppUsesNonExemptEncryption: false
+    entitlements:
+      # written by gen-secrets.sh, gitignored — carries webcredentials:<your relay host>
+      path: Harness/Harness.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.clawd.dictate.harness
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

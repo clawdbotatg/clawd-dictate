@@ -5,6 +5,9 @@
 #   SLOP_URL=https://…         the 💻 key
 #   DEEPGRAM_API_KEY=…         (falls back to clawd-harness/.clawd-harness.env)
 #   DOCS_CREDENTIAL=…          the phone's read-only relay credential
+# Also writes ios/Harness/Harness.entitlements (gitignored): Associated Domains
+#   webcredentials:<HARNESS_URL host> — what lets the ClawdHarness web view use
+#   the fleet passkey (the relay names the app back in FLEET_AASA_APPS).
 # Nothing private — no key, no credential, no URL of yours — lives in the repo.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -39,5 +42,24 @@ with open(os.path.join(here, "Shared", "Secrets.swift"), "w") as f:
     f.write(f"    static let calURL = {q(env['CAL_URL'])}\n")
     f.write(f"    static let slopURL = {q(env['SLOP_URL'])}\n")
     f.write("}\n")
+from urllib.parse import urlsplit
+host = urlsplit(env["HARNESS_URL"]).hostname or ""
+if not host:
+    sys.exit("HARNESS_URL has no host")
+# ?mode=developer: a development-signed build asks the relay directly instead of
+# Apple's CDN (which caches the AASA for a day). Ignored on TestFlight/App Store.
+with open(os.path.join(here, "Harness", "Harness.entitlements"), "w") as f:
+    f.write(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>com.apple.developer.associated-domains</key>
+\t<array>
+\t\t<string>webcredentials:{host}?mode=developer</string>
+\t</array>
+</dict>
+</plist>
+""")
+print(f"wrote Harness/Harness.entitlements (webcredentials:{host})")
 print(f"wrote Shared/Secrets.swift (credential: {'yes' if env.get('DOCS_CREDENTIAL') else 'NONE'})")
 PY
