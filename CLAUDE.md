@@ -95,7 +95,16 @@ before guessing at any phone problem.
 - No Web Speech fallback in WKWebView — a box without a Deepgram key has no
   mic in the app (every fleet box has one except bambu).
 - Build (laptop, phone plugged in + unlocked), same recipe as the dictate app:
-  `sh ios/gen-secrets.sh && cd ios && xcodegen generate && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ClawdDictate.xcodeproj -scheme ClawdHarness -destination 'id=00008150-001205C63A04401C' -derivedDataPath build -allowProvisioningUpdates build && xcrun devicectl device install app --device 8B053FBC-B638-548F-B045-F5DDE25D3BDD build/Build/Products/Debug-iphoneos/ClawdHarness.app`.
+  `sh ios/gen-secrets.sh && cd ios && xcodegen generate && export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer && xcodebuild -project ClawdDictate.xcodeproj -scheme ClawdHarness -destination 'id=00008150-001205C63A04401C' -derivedDataPath build -allowProvisioningUpdates build && xcrun devicectl device install app --device 8B053FBC-B638-548F-B045-F5DDE25D3BDD build/Build/Products/Debug-iphoneos/ClawdHarness.app`
+  (`DEVELOPER_DIR` must be exported, not prefixed: `xcrun devicectl` needs it too).
+  **A NEW bundle id needs its profile minted once in Xcode's GUI** (09-17):
+  xcodebuild under the harness (launchd) can't read the Apple account Xcode
+  keeps in the protected keychain and fails with "No Accounts" even while
+  Xcode shows the account signed in. Open the xcodeproj in Xcode, pick the
+  target → Signing & Capabilities → Team = Austin Griffith; the profile lands
+  in `~/Library/Developer/Xcode/UserData/Provisioning Profiles/` and every
+  later build works from here without the account (why the dictate app never
+  needed this: its profiles date from 09-15).
   First run: the page's passkey gate → Face ID; first 🎤 tap → iOS's one
   mic prompt for "clawd harness"; after that, never.
 
