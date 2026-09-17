@@ -45,7 +45,7 @@ struct ContentView: View {
             HStack(spacing: 14) {
                 Button(session.canStop ? "stop" : "listen") { session.canStop ? session.stop() : session.start() }
                     .buttonStyle(.borderedProminent)
-                Button("refresh words") { session.refreshVocab() }.buttonStyle(.bordered)
+                Button("refresh words") { session.refreshVocab(force: true) }.buttonStyle(.bordered)
             }
             Text("\(session.vocab.terms.count) words · \(session.vocab.rules.count) rules").font(.caption2).foregroundStyle(.secondary)
         }

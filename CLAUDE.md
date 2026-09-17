@@ -10,6 +10,12 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
 | **Mac**: `clawd-dictate.app` | `dictate.py`, `app/`, `install.sh` | double-tap Control → Deepgram → typed live into the focused field; one Control tap, Enter or Escape stops |
 | **iPhone**: `clawd keys` keyboard + `clawd dictate` app | `ios/` | keyboard asks the app; the app records |
 
+**`EXPECTATIONS.md` is the contract** (Austin, 09-17): always listening, one
+field = one dictation, fast, never breaks itself. Read it before touching any
+surface. The phone writes `dictate.log` in the App Group container (both the
+app and the keyboard); the pull command is in EXPECTATIONS.md — pull it
+before guessing at any phone problem.
+
 ## The word list (single source of truth)
 
 - **Built-in terms + rules** live in the harness: `STT_BASE_TERMS` /

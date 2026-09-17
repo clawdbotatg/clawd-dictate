@@ -35,6 +35,9 @@ final class Session: NSObject, ObservableObject {
     private var heartbeat: Timer?
     private var idleTimer: Timer?
     private var audioObservers: [NSObjectProtocol] = []
+    private var vocabRefreshedAt = Date.distantPast
+    private var streamStartedAt = Date()
+    private var firstResultLogged = false
 
     override init() {
         super.init()
@@ -59,12 +62,18 @@ final class Session: NSObject, ObservableObject {
         guard cmd != lastCmd, !cmd.isEmpty else { return }
         lastCmd = cmd
         let id = String(cmd.split(separator: ":", maxSplits: 1).last ?? "")
+        Shared.log("app", "cmd \(cmd.prefix(14)) alive=\(alive) engine=\(micRunning) run=\(run?.id.prefix(8) ?? "-")")
         if cmd.hasPrefix("start:") { start(id: id) }
         else if cmd.hasPrefix("stop:"), run?.id == id { stop() }
     }
 
     // MARK: words
-    func refreshVocab() {
+    /// At most every 5 min unless forced: the base list is the whole harness
+    /// index.html, and fetching it on every start competed with the Deepgram
+    /// socket for the link (the "ten second delay", 09-17).
+    func refreshVocab(force: Bool = false) {
+        guard force || Date().timeIntervalSince(vocabRefreshedAt) > 300 else { return }
+        vocabRefreshedAt = Date()
         let d = Shared.defaults
         var req = URLRequest(url: URL(string: Shared.relay + "/docs/get?name=stt-words.txt")!)
         req.setValue("Bearer " + Secrets.docsCredential, forHTTPHeaderField: "Authorization")
@@ -85,8 +94,9 @@ final class Session: NSObject, ObservableObject {
     // MARK: start / stop
     func start(id: String = "app") {
         let keyboard = id != "app"
-        guard !keyboard || (Shared.leaseUntil(id: id) ?? .distantPast) > Date() else { return }
-        if let current = run, current.id == id, current.phase != .stopping { return }
+        guard !keyboard || (Shared.leaseUntil(id: id) ?? .distantPast) > Date() else { Shared.log("app", "start \(id.prefix(8)) REJECTED: no lease"); return }
+        if let current = run, current.id == id, current.phase != .stopping { Shared.log("app", "start \(id.prefix(8)) already running"); return }
+        Shared.log("app", "start \(id.prefix(8)) alive=\(alive) engine=\(micRunning) bg=\(inBackground)")
         finishNow()
         let current = RecordingRun(id: id, keyboard: keyboard)
         run = current
@@ -108,10 +118,12 @@ final class Session: NSObject, ObservableObject {
                 guard !run.expired(leaseUntil: Shared.leaseUntil(id: run.id)) else { self.stop(); return }
                 guard ok else { self.fail("microphone not allowed — Settings → clawd dictate → Microphone"); return }
                 do { try self.openMic() } catch {
+                    Shared.log("app", "openMic FAILED at start: \(error)")
                     self.closeMic()
                     self.fail("wake")
                     return
                 }
+                Shared.log("app", "mic opened at start")
                 self.alive = true
                 self.heartbeat?.invalidate()
                 self.heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.heartbeatTick() }
@@ -124,6 +136,8 @@ final class Session: NSObject, ObservableObject {
     private func beginStream(token: UUID) {
         guard run?.token == token, run?.phase == .starting else { return }
         openDeepgram()
+        streamStartedAt = Date(); firstResultLogged = false
+        Shared.log("app", "stream \(run?.id.prefix(8) ?? "-") socket opening, \(vocab.terms.count) terms")
         run?.phase = .streaming
         listening = true
         audioGate.set(ws)
@@ -140,6 +154,7 @@ final class Session: NSObject, ObservableObject {
     }
 
     func stop() {
+        Shared.log("app", "stop \(run?.id.prefix(8) ?? "-") phase=\(run.map { "\($0.phase)" } ?? "-")")
         audioGate.set(nil)
         listening = false
         guard let current = run, current.phase != .stopping else { return }
@@ -162,6 +177,7 @@ final class Session: NSObject, ObservableObject {
     }
 
     private func fail(_ message: String) {
+        Shared.log("app", "FAIL \(message)")
         audioGate.set(nil)
         listening = false
         commit(state: "error: " + message)
@@ -175,6 +191,7 @@ final class Session: NSObject, ObservableObject {
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
         interim = ""; finals = []
+        Shared.log("app", "commit \(dictId.prefix(8)) \(text.count) chars state=\(state)")
         Shared.defaults.set(text, forKey: Shared.kFinal)
         ws?.cancel(with: .normalClosure, reason: nil); ws = nil
         run = nil
@@ -188,6 +205,7 @@ final class Session: NSObject, ObservableObject {
     /// it; `alive` must never outlive the hardware, or "listening" streams
     /// silence and the keyboard skips the hop that would have fixed it.
     private var micRunning: Bool { engine.isRunning }
+    private var inBackground: Bool { UIApplication.shared.applicationState != .active }
 
     /// Every beat: a running engine is advertised to the keyboard; a stopped
     /// one is reopened in place, or the mic is declared closed (heartbeat off,
@@ -197,8 +215,10 @@ final class Session: NSObject, ObservableObject {
         if micRunning { Shared.defaults.set(Date(), forKey: Shared.kAlive); return }
         do {
             try openMic()
+            Shared.log("app", "engine was stopped: reopened (bg=\(inBackground))")
             Shared.defaults.set(Date(), forKey: Shared.kAlive)
         } catch {
+            Shared.log("app", "engine was stopped: reopen FAILED (bg=\(inBackground)): \(error) — mic declared closed")
             closeMic()
             if listening { fail("microphone lost — tap listen") }
         }
@@ -207,14 +227,18 @@ final class Session: NSObject, ObservableObject {
     private func observeAudio() {
         guard audioObservers.isEmpty else { return }
         let nc = NotificationCenter.default
-        let tick: (Notification) -> Void = { [weak self] _ in self?.heartbeatTick() }
         audioObservers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
-            guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt ?? 99
+            Shared.log("app", "interruption \(raw == 1 ? "began" : raw == 0 ? "ended" : "?\(raw)")")
+            guard AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
             self?.heartbeatTick()
         })
-        audioObservers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main, using: tick))
-        audioObservers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main, using: tick))
+        audioObservers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            Shared.log("app", "engine configuration change"); self?.heartbeatTick()
+        })
+        audioObservers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            Shared.log("app", "media services reset"); self?.heartbeatTick()
+        })
     }
 
     private func teardownEngine() {
@@ -304,6 +328,10 @@ final class Session: NSObject, ObservableObject {
                        let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any], j["type"] as? String == "Results" {
                         let t = ((((j["channel"] as? [String: Any])?["alternatives"] as? [[String: Any]])?.first)?["transcript"] as? String ?? "")
                             .trimmingCharacters(in: .whitespaces)
+                        if !self.firstResultLogged {
+                            self.firstResultLogged = true
+                            Shared.log("app", "first result \(Int(Date().timeIntervalSince(self.streamStartedAt) * 1000)) ms after socket open: \"\(t.prefix(30))\"")
+                        }
                         if j["is_final"] as? Bool == true {
                             if !t.isEmpty { self.finals.append(t) }
                             self.interim = ""

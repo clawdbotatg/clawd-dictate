@@ -28,6 +28,7 @@ final class KeyboardViewController: UIInputViewController {
     private let keysView = UIStackView()
     private var textObserver: AnyObject?
     private var lastSeq = -1
+    private var lastState = ""
     private var written = ""               // exactly what THIS dictation has typed into the field so far
     private var committed = 0              // chars of the app's text already typed by hand / a previous field — never touched again
     private var listening = false
@@ -67,6 +68,7 @@ final class KeyboardViewController: UIInputViewController {
             anchor?.canResume(id: myDict, publishedID: Shared.defaults.string(forKey: Shared.kDict),
                               current: currentAnchor, selected: textDocumentProxy.selectedText) == true &&
             (Shared.leaseUntil(id: myDict) ?? .distantPast) > Date()
+        Shared.log("kb", "appear returning=\(returning) hop=\(hopping) alive=\(Shared.aliveNow) ctx=\(ctxDesc)")
         hopping = false
         if returning {
             Shared.renewLease(id: myDict)
@@ -82,7 +84,14 @@ final class KeyboardViewController: UIInputViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         visible = false
+        Shared.log("kb", "disappear hop=\(hopping)")
         if !hopping { abandon() }
+    }
+
+    /// For the log: the field context, lengths only (never the text).
+    private var ctxDesc: String {
+        let p = textDocumentProxy
+        return "doc=\(p.documentIdentifier.uuidString.prefix(4)) before=\(p.documentContextBeforeInput.map { String($0.count) } ?? "nil") after=\(p.documentContextAfterInput.map { String($0.count) } ?? "nil") sel=\(p.selectedText.map { String($0.count) } ?? "nil")"
     }
 
     private var currentAnchor: TextAnchor {
@@ -110,6 +119,7 @@ final class KeyboardViewController: UIInputViewController {
     /// — clicking into a box means "record" (Austin, 09-17), never "tap ● again".
     private var movedAt = Date.distantPast
     private func cursorMoved() {
+        Shared.log("kb", "cursor moved: was \(anchor.map { "before=\($0.before?.count ?? -1) after=\($0.after?.count ?? -1)" } ?? "-") now \(ctxDesc) written=\(written.count)")
         abandon()
         guard wantListening else { setBar("paused — tap ● to dictate", on: false); return }
         if Date().timeIntervalSince(movedAt) < 1.0 {      // a flickering context must not restart in a loop
@@ -201,6 +211,7 @@ final class KeyboardViewController: UIInputViewController {
         Shared.defaults.set("start:" + nonce, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)
         listening = true
+        Shared.log("kb", "start \(nonce.prefix(8)) alive=\(Shared.aliveNow) \(ctxDesc)")
         if Shared.aliveNow { setBar("listening", on: true); return }   // mic already open in the app: no hop
         hopping = true
         setBar("starting the mic in clawd dictate… swipe back here", on: true)
@@ -208,6 +219,7 @@ final class KeyboardViewController: UIInputViewController {
     }
 
     private func stopListening(silent: Bool) {
+        Shared.log("kb", "stop \(myDict.prefix(8)) silent=\(silent) written=\(written.count)")
         Shared.releaseLease(id: myDict)
         Shared.defaults.set("stop:" + myDict, forKey: Shared.kCmd)
         Shared.post(Shared.noteCmd)
@@ -240,6 +252,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func showWake(_ url: URL) {
         if wakeHost != nil { return }
+        Shared.log("kb", "wake button shown (app did not answer the hop)")
         setBar("app is asleep — tap wake", on: false)
         let link = Link(destination: url) {
             Text("wake").font(.system(size: 17, weight: .semibold)).foregroundColor(.white)
@@ -274,6 +287,7 @@ final class KeyboardViewController: UIInputViewController {
         lastSeq = seq
         let state = d.string(forKey: Shared.kState) ?? "idle"
         guard (d.string(forKey: Shared.kDict) ?? "") == myDict else { return }   // another field's dictation — not ours
+        if state != lastState { lastState = state; Shared.log("kb", "state \(state) for \(myDict.prefix(8))") }
         let interim = d.string(forKey: Shared.kInterim) ?? ""
         if state == "error: wake" {                 // iOS won't give a background app the mic: hop (once)
             if listening && !hopping { hopping = true; setBar("starting the mic in clawd dictate… swipe back here", on: true); openApp(URL(string: "clawddictate://start?id=" + myDict)!) }

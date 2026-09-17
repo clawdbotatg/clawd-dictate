@@ -26,6 +26,28 @@ enum Shared {
 
     static var defaults: UserDefaults { UserDefaults(suiteName: group) ?? .standard }
 
+    // MARK: the log — `dictate.log` in the App Group container, both processes
+    // append. Pull it over USB: `xcrun devicectl device copy from --device <id>
+    // --source dictate.log --destination x.log --domain-type appGroupDataContainer
+    // --domain-identifier group.com.clawd.dictate`. Trimmed to ~150 KB.
+    static let logURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?.appendingPathComponent("dictate.log")
+    private static let logQueue = DispatchQueue(label: "dictate.log")
+    private static let logStamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f }()
+    private static var logWrites = 0
+    static func log(_ who: String, _ msg: String) {
+        guard let url = logURL else { return }
+        let line = "\(logStamp.string(from: Date())) \(who) \(msg)\n"
+        logQueue.async {
+            if let h = try? FileHandle(forWritingTo: url) {
+                h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
+            } else { try? line.data(using: .utf8)!.write(to: url) }
+            logWrites += 1
+            if logWrites % 200 == 0, let d = try? Data(contentsOf: url), d.count > 300_000 {
+                try? d.suffix(150_000).write(to: url)
+            }
+        }
+    }
+
     static func post(_ name: String) {
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFNotificationName(name as CFString), nil, nil, true)
