@@ -105,13 +105,17 @@ final class KeyboardViewController: UIInputViewController {
         hideWake()
     }
 
+    /// The cursor left the field this dictation belongs to: that dictation is
+    /// over (its words stay where they were), and a new one starts here at once
+    /// — clicking into a box means "record" (Austin, 09-17), never "tap ● again".
+    private func cursorMoved() {
+        abandon()
+        if wantListening { startListening() } else { setBar("paused — tap ● to dictate", on: false) }
+    }
+
     private func tick() {
         guard visible else { return }
-        if !myDict.isEmpty && !ownsCursor {
-            abandon()
-            setBar("cursor moved — tap ● to dictate", on: false)
-            return
-        }
+        if !myDict.isEmpty && !ownsCursor { cursorMoved(); return }
         if listening { Shared.renewLease(id: myDict, seconds: hopping ? 20 : 6) }
         pull()
     }
@@ -262,7 +266,7 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: text from the app
     private func pull() {
         guard visible, !myDict.isEmpty else { return }
-        guard ownsCursor else { abandon(); setBar("cursor moved — tap ● to dictate", on: false); return }
+        guard ownsCursor else { cursorMoved(); return }
         let d = Shared.defaults
         let seq = d.integer(forKey: Shared.kSeq)
         guard seq != lastSeq else { return }
@@ -310,7 +314,7 @@ final class KeyboardViewController: UIInputViewController {
     /// rewrites an earlier word ("on chain" → "onchain") reaches back exactly
     /// as far as it must. Text the user typed by hand is behind `committed`.
     private func sync(to target: String) {
-        guard ownsCursor else { abandon(); return }
+        guard ownsCursor else { cursorMoved(); return }
         let want = String(target.dropFirst(committed))
         if want == written { return }
         let common = zip(written, want).prefix { $0 == $1 }.count
@@ -324,7 +328,7 @@ final class KeyboardViewController: UIInputViewController {
     /// The user typed: everything dictated so far is theirs now. Dictation
     /// resumes appending after it and never deletes back into it.
     private func handTyped() {
-        if !ownsCursor { abandon(); return }
+        if !ownsCursor { cursorMoved(); return }
         committed += written.count
         written = ""
     }
