@@ -108,9 +108,15 @@ final class KeyboardViewController: UIInputViewController {
     /// The cursor left the field this dictation belongs to: that dictation is
     /// over (its words stay where they were), and a new one starts here at once
     /// — clicking into a box means "record" (Austin, 09-17), never "tap ● again".
+    private var movedAt = Date.distantPast
     private func cursorMoved() {
         abandon()
-        if wantListening { startListening() } else { setBar("paused — tap ● to dictate", on: false) }
+        guard wantListening else { setBar("paused — tap ● to dictate", on: false); return }
+        if Date().timeIntervalSince(movedAt) < 1.0 {      // a flickering context must not restart in a loop
+            setBar("cursor moved — tap ● to dictate", on: false); return
+        }
+        movedAt = Date()
+        startListening()
     }
 
     private func tick() {
@@ -289,11 +295,11 @@ final class KeyboardViewController: UIInputViewController {
             guard listening else { return }          // not ours (another field's keyboard asked)
             let full = done + (interim.isEmpty ? "" : (done.isEmpty ? "" : " ") + interim)
             setBar("listening", on: true)             // the words are in the field — the bar just says so
-            sync(to: full)
+            _ = sync(to: full)
         } else if state == "idle" {
             let final = d.string(forKey: Shared.kFinal) ?? ""
             if !final.isEmpty {
-                sync(to: final)
+                guard sync(to: final) else { return }   // the cursor left: a new dictation owns myDict now
                 if !written.isEmpty { textDocumentProxy.insertText(" "); rememberCursor() }
                 d.set("", forKey: Shared.kFinal)
                 setBar("paused — tap ● to dictate", on: false)
@@ -313,16 +319,18 @@ final class KeyboardViewController: UIInputViewController {
     /// stay put, the in-progress segment is re-typed as it revises, a rule that
     /// rewrites an earlier word ("on chain" → "onchain") reaches back exactly
     /// as far as it must. Text the user typed by hand is behind `committed`.
-    private func sync(to target: String) {
-        guard ownsCursor else { cursorMoved(); return }
+    @discardableResult
+    private func sync(to target: String) -> Bool {
+        guard ownsCursor else { cursorMoved(); return false }
         let want = String(target.dropFirst(committed))
-        if want == written { return }
+        if want == written { return true }
         let common = zip(written, want).prefix { $0 == $1 }.count
         for _ in 0..<(written.count - common) { textDocumentProxy.deleteBackward() }
         let tail = String(want.dropFirst(common))
         if !tail.isEmpty { textDocumentProxy.insertText(tail) }
         written = want
         rememberCursor()
+        return true
     }
 
     /// The user typed: everything dictated so far is theirs now. Dictation
@@ -433,10 +441,9 @@ final class KeyboardViewController: UIInputViewController {
     @objc private func tapBackspace() { handTyped(); textDocumentProxy.deleteBackward(); rememberCursor() }
     @objc private func tapSpace() { handTyped(); textDocumentProxy.insertText(" "); rememberCursor() }
     @objc private func tapReturn() {
-        wantListening = false
         abandon()   // Return can submit the field; never insert a late final into the next one.
         textDocumentProxy.insertText("\n")
-        setBar("paused — tap ● to dictate", on: false)
+        if wantListening { startListening() } else { setBar("paused — tap ● to dictate", on: false) }   // still listening: the next message starts here
     }
     @objc private func tapGlobe() { advanceToNextInputMode() }
     @objc private func tapMacro(_ sender: UIButton) {
