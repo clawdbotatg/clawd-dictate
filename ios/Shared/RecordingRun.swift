@@ -39,8 +39,12 @@ struct TextAnchor: Equatable {
     let before: String?
     let after: String?
 
+    /// No context (nil) and an empty field ("") are the same thing: many hosts,
+    /// web views included, report nil until the field has text. Refusing them
+    /// refused every empty composer ("place the cursor in an editable field").
     func permits(_ current: TextAnchor, selected: String?) -> Bool {
-        (before != nil || after != nil) && self == current && (selected ?? "").isEmpty
+        document == current.document && (before ?? "") == (current.before ?? "")
+            && (after ?? "") == (current.after ?? "") && (selected ?? "").isEmpty
     }
 
     func canResume(id: String, publishedID: String?, current: TextAnchor, selected: String?) -> Bool {

@@ -114,7 +114,9 @@ final class StubURLSessionWebSocketTask {
         precondition(!anchor.permits(TextAnchor(document: document, before: "hel", after: "lo"), selected: nil), "cursor movement must stop edits")
         precondition(!anchor.permits(anchor, selected: "hello"), "selection must stop edits")
         let unknown = TextAnchor(document: document, before: nil, after: nil)
-        precondition(!unknown.permits(unknown, selected: nil), "missing context must fail closed")
+        precondition(unknown.permits(unknown, selected: nil), "an empty field (no context yet) must be dictatable")
+        precondition(unknown.permits(TextAnchor(document: document, before: "", after: ""), selected: nil), "nil and empty context are the same field")
+        precondition(!unknown.permits(TextAnchor(document: document, before: "typed", after: nil), selected: nil), "text appearing under us is a field change")
 
         let vocab = Vocab.build(shared: "ETH skills => ethskills", baseHTML: "")
         precondition(vocab.fix("ETH, skills") == "ethskills")
