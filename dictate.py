@@ -4,8 +4,10 @@
 The harness mic, system-wide on the Mac. Same recognizer (Deepgram nova-3),
 same word list (the ⚙️ list shared on the relay + the harness's built-in terms
 and replace rules, read straight out of clawd-harness/index.html so the three
-surfaces never drift). The words are TYPED live into whatever field has focus
-— revised as Deepgram settles them, editing only the tail that changed — and
+surfaces never drift). The words are TYPED live into the field that had focus
+when you started — revised as Deepgram settles them, editing only the tail
+that changed. Move the cursor to another field, chat or app and that
+dictation ends there; a new one starts where you are (EXPECTATIONS.md) — and
 a small pill at the bottom of the screen (clawd, listening) says the mic is
 on. One Control tap (or Enter, or Escape) stops.
 
@@ -151,6 +153,7 @@ class Dictation:
         self.q = queue.Queue()
         self.finals, self.interim = [], ""
         self.stopping = self.cancelled = False
+        self.moved = False                    # replaced by a restart: its callbacks are ignored
         self.ws = None
         self.stream = None
         self.closed = threading.Event()
@@ -170,7 +173,7 @@ class Dictation:
                               open_timeout=8, max_size=None)
         except Exception as e:
             log("deepgram: connect failed:", e)
-            self.on_done(None)
+            self.on_done(self, None)
             return
         threading.Thread(target=self._recv, daemon=True).start()
 
@@ -183,7 +186,7 @@ class Dictation:
         except Exception as e:
             log("mic: failed:", e)
             self._close()
-            self.on_done(None)
+            self.on_done(self, None)
             return
         while not self.stopping:
             try:
@@ -205,7 +208,7 @@ class Dictation:
             pass
         self.closed.wait(TAIL_S)              # the flush: last finals land, then the server closes
         self._close()
-        self.on_done(None if self.cancelled else self.text())
+        self.on_done(self, None if self.cancelled else self.text())
 
     def _recv(self):
         try:
@@ -222,7 +225,7 @@ class Dictation:
                     self.interim = ""
                 else:
                     self.interim = t
-                self.on_text(self.text())
+                self.on_text(self, self.text())
         except Exception as e:
             if not self.stopping:
                 log("deepgram: recv ended:", e)
@@ -240,6 +243,54 @@ class Dictation:
             pass
 
 
+# ── where the cursor is ──────────────────────────────────────────────────────
+class Focus:
+    """The field a dictation belongs to: the focused element and the title of
+    its window (Accessibility API). Chats in the harness share one composer
+    whose draft swaps per session — only the window title tells them apart;
+    other apps swap the element or the window. A dictation is anchored to the
+    focus it started in; when that changes it ends there and a new one starts
+    where the cursor is now (EXPECTATIONS.md: one field, one dictation)."""
+    def __init__(self):
+        try:
+            from ApplicationServices import (AXUIElementCreateSystemWide, AXUIElementCopyAttributeValue,
+                                             kAXFocusedUIElementAttribute, kAXWindowAttribute, kAXTitleAttribute)
+        except ImportError:
+            self.ok = False
+            return
+        self.ok = True
+        self.title_only = False               # set when element identity proves unreliable in some app
+        self.sys = AXUIElementCreateSystemWide()
+        self.get = AXUIElementCopyAttributeValue
+        self.k_focused, self.k_window, self.k_title = kAXFocusedUIElementAttribute, kAXWindowAttribute, kAXTitleAttribute
+
+    def now(self):
+        """(element, window title), or None when nothing has focus."""
+        if not self.ok:
+            return None
+        err, el = self.get(self.sys, self.k_focused, None)
+        if err or el is None:
+            return None
+        title = None
+        err, win = self.get(el, self.k_window, None)
+        if not err and win is not None:
+            err, title = self.get(win, self.k_title, None)
+            if err:
+                title = None
+        return (el, title)
+
+    def same(self, a, b):
+        if a is None or b is None:
+            return a is None and b is None
+        if a[1] != b[1]:
+            return False
+        return self.title_only or a[0] == b[0]    # AXUIElement == is CFEqual: same pid + element
+
+    @staticmethod
+    def describe(a):
+        return "nothing" if a is None else f"{a[1]!r}"
+
+
 # ── the typist: live text into the focused field ─────────────────────────────
 class Typist:
     """Keeps the focused field showing the dictation's text by editing only the
@@ -247,12 +298,13 @@ class Typist:
     in-progress segment is re-typed as it revises, a rule that rewrites an
     earlier word reaches back exactly as far as it must). Key events come from
     pynput's Controller, so this works in any app that takes typing."""
-    def __init__(self):
+    def __init__(self, guard=lambda: True):
         from pynput.keyboard import Controller
         self.kb = Controller()
         self.written = ""
         self.lock = threading.Lock()
         self.busy = False
+        self.guard = guard                     # False = the cursor left this dictation's field: type nothing
 
     def reset(self):
         with self.lock:
@@ -263,6 +315,8 @@ class Typist:
         target = (target or "").replace("\n", " ")
         with self.lock:
             if target == self.written:
+                return
+            if not self.guard():
                 return
             common = 0
             for a, b in zip(self.written, target):
@@ -291,7 +345,11 @@ class App:
         self.cur = None
         self.last_ctrl = 0.0
         self.ui = None
-        self.typist = Typist()
+        self.focus = Focus()
+        self.anchor = None                    # the focus the current dictation belongs to
+        self.misses = 0
+        self.moves = []                       # times of recent restarts with an unchanged title (loop detector)
+        self.typist = Typist(guard=lambda: self.focus.same(self.anchor, self.focus.now()))
 
     # -- hotkey: Control double-tap toggles; Escape cancels a live one
     def on_press(self, key):
@@ -307,30 +365,80 @@ class App:
                 self.toggle()
             else:
                 self.last_ctrl = now
-        elif key in (Key.enter, Key.esc) and self.cur and not self.typist.busy:
-            self.cur.stop()                   # Enter still reaches the app (sends the message) — we just stop listening
+        elif key == Key.esc and self.cur and not self.typist.busy:
+            self.cur.stop()
+        elif key == Key.enter and self.cur and not self.typist.busy:
+            self.restart("Enter")             # Enter reaches the app (sends the message); we keep listening for the next one
 
     def toggle(self):
         if self.cur:
             self.ui.show("finishing…")        # the last words land, then the pill goes
             self.cur.stop()
             return
+        self.begin()
+
+    def begin(self):
+        self.anchor = self.focus.now()
+        self.misses = 0
         self.typist.reset()
         self.ui.show()
         d = Dictation(self.key, self.vocab, self.on_text, self.on_done)
         self.cur = d
         d.start()
 
-    def on_text(self, text):
+    def restart(self, why):
+        """End the current dictation where it is (its late words are dropped,
+        never typed somewhere else) and start a new one where the cursor is."""
+        old = self.cur
+        if not old:
+            return
+        old.moved = True
+        old.stop(cancel=True)
+        log(f"{why}: new dictation in {Focus.describe(self.focus.now())}")
+        self.begin()
+
+    def on_text(self, d, text):
+        if d is not self.cur or getattr(d, "moved", False):
+            return
         self.typist.sync(text)
 
-    def on_done(self, text):
-        self.cur = None
+    def on_done(self, d, text):
+        if getattr(d, "moved", False):
+            return                            # replaced by restart(); the new dictation owns the typist now
+        if self.cur is d:
+            self.cur = None
         if text is not None:
             self.typist.sync(text)
             log("dictation complete")
         self.typist.reset()
         self.ui.hide_after(0.2)
+
+    def watch_loop(self):
+        # The cursor moved to another field / chat / app: end the dictation
+        # there and start a new one here. Two reads in a row must disagree —
+        # one odd read (focus briefly nothing during a switch) is not a move.
+        while True:
+            time.sleep(0.25)
+            d = self.cur
+            if not d or self.typist.busy:
+                continue
+            now = self.focus.now()
+            if self.focus.same(self.anchor, now):
+                self.misses = 0
+                continue
+            self.misses += 1
+            if self.misses >= 2 and self.cur is d:
+                if self.anchor and now and self.anchor[1] == now[1]:
+                    # same window title, "different" element: if this keeps happening the
+                    # element compare is lying for this app — trust the title alone
+                    self.moves = [t for t in self.moves if time.monotonic() - t < 5] + [time.monotonic()]
+                    if len(self.moves) >= 2 and not self.focus.title_only:
+                        self.focus.title_only = True
+                        log("element identity unreliable here — comparing window titles only")
+                        self.anchor = now
+                        self.misses = 0
+                        continue
+                self.restart("focus moved")
 
     def words_loop(self):
         while True:
@@ -379,6 +487,7 @@ class App:
         keyboard.Listener(on_press=self.on_press).start()
         threading.Thread(target=self.words_loop, daemon=True).start()
         threading.Thread(target=self.trust_loop, daemon=True).start()
+        threading.Thread(target=self.watch_loop, daemon=True).start()
         log("ready — double-tap Control to dictate")
         self.ui.run()
 
@@ -484,6 +593,13 @@ def test_file(path):
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--test":
         test_file(sys.argv[2])
+    elif len(sys.argv) > 1 and sys.argv[1] == "--focus":
+        # trusted-process check: what the Focus anchor sees, twice, and whether the two reads agree
+        from ApplicationServices import AXIsProcessTrusted
+        f = Focus()
+        a, b = f.now(), f.now()
+        err, el = f.get(f.sys, f.k_focused, None) if f.ok else (None, None)
+        print("trusted:", AXIsProcessTrusted(), "| focus:", Focus.describe(a), "| same twice:", f.same(a, b), "| ax err:", err, "| element:", a and a[0])
     elif len(sys.argv) > 1 and sys.argv[1] == "--words":
         v = Vocab()
         print("terms:", ", ".join(v.terms))

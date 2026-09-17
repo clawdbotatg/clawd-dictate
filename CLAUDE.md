@@ -7,7 +7,7 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
 | surface | where | how it hears |
 | --- | --- | --- |
 | harness mic (🎤 / space-hold) | `clawd-harness/index.html` | page's own WebSocket to Deepgram |
-| **Mac**: `clawd-dictate.app` | `dictate.py`, `app/`, `install.sh` | double-tap Control → Deepgram → typed live into the focused field; one Control tap, Enter or Escape stops |
+| **Mac**: `clawd-dictate.app` | `dictate.py`, `app/`, `install.sh` | double-tap Control → Deepgram → typed live into the field that had focus at the start (`Focus` anchor: AX element + window title; a move ends that dictation and starts a new one where the cursor is; Enter = send + keep listening); one Control tap or Escape stops |
 | **iPhone**: `clawd keys` keyboard + `clawd dictate` app | `ios/` | keyboard asks the app; the app records |
 
 **`EXPECTATIONS.md` is the contract** (Austin, 09-17): always listening, one
