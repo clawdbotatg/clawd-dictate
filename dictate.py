@@ -124,7 +124,9 @@ class Vocab:
         for frm, to in ur + br:
             frm = frm.strip()
             if frm:
-                rules.append((re.compile(r"\b" + re.escape(frm).replace(r"\ ", r"[\s,.]+") + r"\b", re.I), to))   # "ETH, skills" too
+                pat = re.escape(frm).replace(r"\ ", r"[\s,.]+")   # "ETH, skills" too
+                pat = re.sub(r"s$", "['\u2019]?s", pat, flags=re.I)   # "kodak's" too (a trailing s matches the possessive)
+                rules.append((re.compile(r"\b" + pat + r"\b", re.I), to))
         with self.lock:
             self.terms, self.rules = terms[:100], rules
         log(f"words: {len(terms)} terms, {len(rules)} rules ({len(uw)} shared words, {len(ur)} shared rules)")

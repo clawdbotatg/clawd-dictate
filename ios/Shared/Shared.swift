@@ -156,7 +156,8 @@ struct Vocab {
         for (from, to) in s.rules + b.rules {
             let f = from.trimmingCharacters(in: .whitespaces)
             if f.isEmpty { continue }
-            let esc = f.split(whereSeparator: { $0.isWhitespace }).map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: #"[\s,.]+"#)   // "ETH, skills" too
+            var esc = f.split(whereSeparator: { $0.isWhitespace }).map { NSRegularExpression.escapedPattern(for: String($0)) }.joined(separator: #"[\s,.]+"#)   // "ETH, skills" too
+            if esc.lowercased().hasSuffix("s") { esc = String(esc.dropLast()) + "['\u{2019}]?s" }   // "kodak's" too (a trailing s matches the possessive)
             if let rx = try? NSRegularExpression(pattern: #"\b"# + esc + #"\b"#, options: .caseInsensitive) {
                 v.rules.append((rx, to))
             }

@@ -122,6 +122,9 @@ final class StubURLSessionWebSocketTask {
         precondition(vocab.fix("ETH, skills") == "ethskills")
         precondition(vocab.fix("ETH. skills") == "ethskills")
         precondition(vocab.fix("ETH skills") == "ethskills")
+        let poss = Vocab.build(shared: "kodaks => Codex", baseHTML: "")
+        precondition(poss.fix("I said kodak's and Kodaks and kodak\u{2019}s.") == "I said Codex and Codex and Codex.", "a trailing s must match the possessive")
+        precondition(poss.fix("kodak") == "kodak", "the bare stem is not the rule")
         print("PASS: startup cancellation, dead-engine reopen, stale permission/socket/flush, error display, lease expiry, recording limit, audio gate, field/cursor ownership, punctuation")
     }
 }
