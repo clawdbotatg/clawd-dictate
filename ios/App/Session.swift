@@ -35,6 +35,7 @@ final class Session: NSObject, ObservableObject {
     private var heartbeat: Timer?
     private var idleTimer: Timer?
     private var audioObservers: [NSObjectProtocol] = []
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private var vocabRefreshedAt = Date.distantPast
     private var streamStartedAt = Date()
     private var firstResultLogged = false
@@ -44,6 +45,14 @@ final class Session: NSObject, ObservableObject {
     override init() {
         super.init()
         cmdObserver = Shared.observe(Shared.noteCmd) { [weak self] in self?.onCmd() }
+        let nc = NotificationCenter.default
+        for (name, tag) in [(UIApplication.didEnterBackgroundNotification, "background"), (UIApplication.willEnterForegroundNotification, "foreground"),
+                            (UIApplication.didBecomeActiveNotification, "active"), (UIApplication.willTerminateNotification, "TERMINATE")] {
+            lifecycleObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self = self else { return }
+                Shared.log("app", "\(tag) alive=\(self.alive) engine=\(self.micRunning) listening=\(self.listening)")
+            })
+        }
         onCmd()   // a command may already be waiting (we were launched for it)
     }
 
@@ -118,11 +127,15 @@ final class Session: NSObject, ObservableObject {
                 guard let self = self, let run = self.run, run.token == current.token,
                       run.phase == .starting else { return }
                 guard !run.expired(leaseUntil: Shared.leaseUntil(id: run.id)) else { self.stop(); return }
+                Shared.log("app", "record permission \(ok ? "granted" : "DENIED")")
                 guard ok else { self.fail("microphone not allowed — Settings → clawd dictate → Microphone"); return }
                 do { try self.openMic() } catch {
-                    Shared.log("app", "openMic FAILED at start: \(error)")
+                    let bg = self.inBackground
+                    Shared.log("app", "openMic FAILED at start (bg=\(bg)): \(error)")
                     self.closeMic()
-                    self.fail("wake")
+                    // In the background iOS refuses a mic start: the keyboard hops once. In the
+                    // foreground the failure is real (another app holds the mic): say so.
+                    self.fail(bg ? "wake" : "mic busy — \((error as NSError).code)")
                     return
                 }
                 Shared.log("app", "mic opened at start")
@@ -232,9 +245,11 @@ final class Session: NSObject, ObservableObject {
         let nc = NotificationCenter.default
         audioObservers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] n in
             let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt ?? 99
-            Shared.log("app", "interruption \(raw == 1 ? "began" : raw == 0 ? "ended" : "?\(raw)")")
+            let reason = n.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt
+            let resume = ((n.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0) & AVAudioSession.InterruptionOptions.shouldResume.rawValue != 0
+            Shared.log("app", "interruption \(raw == 1 ? "began" : raw == 0 ? "ended" : "?\(raw)") reason=\(reason.map(String.init) ?? "-") shouldResume=\(resume)")
             guard AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
-            self?.heartbeatTick()
+            self?.reviveMic()
         })
         audioObservers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             Shared.log("app", "engine configuration change"); self?.heartbeatTick()
@@ -242,6 +257,24 @@ final class Session: NSObject, ObservableObject {
         audioObservers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
             Shared.log("app", "media services reset"); self?.heartbeatTick()
         })
+    }
+
+    /// An interruption ended (the other app let the mic go, the call ended):
+    /// iOS allows a background session to resume here. A mic that had been
+    /// declared closed is reopened too, so the next keyboard start needs no hop.
+    private func reviveMic() {
+        if alive { heartbeatTick(); return }
+        do {
+            try openMic()
+            alive = true
+            heartbeat?.invalidate()
+            heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.heartbeatTick() }
+            Shared.defaults.set(Date(), forKey: Shared.kAlive)
+            Shared.log("app", "mic revived after interruption (bg=\(inBackground))")
+            armIdle()
+        } catch {
+            Shared.log("app", "mic revive after interruption FAILED (bg=\(inBackground)): \(error)")
+        }
     }
 
     private func teardownEngine() {

@@ -218,9 +218,25 @@ final class KeyboardViewController: UIInputViewController {
         listening = true
         Shared.log("kb", "start \(nonce.prefix(8)) alive=\(Shared.aliveNow) \(ctxDesc)")
         if Shared.aliveNow { setBar("listening", on: true); return }   // mic already open in the app: no hop
+        hop(reason: "start")
+    }
+
+    /// The app's mic is closed: send the user through the app ONCE. A second
+    /// hop within 45 s (the app could not hold the mic — another app has it, a
+    /// call, or iOS suspended it) shows the wake button instead of yanking the
+    /// user over again (Austin, 09-17: "it jerks me over to the app every time").
+    private func hop(reason: String) {
+        let url = URL(string: "clawddictate://start?id=" + myDict)!
+        if Shared.hoppedRecently() {
+            Shared.log("kb", "hop (\(reason)) SUPPRESSED: hopped within 45 s — wake button instead")
+            setBar("app can't hold the mic — tap wake", on: false)
+            showWake(url)
+            return
+        }
+        Shared.noteHop()
         hopping = true
         setBar("starting the mic in clawd dictate… swipe back here", on: true)
-        openApp(URL(string: "clawddictate://start?id=" + myDict)!)
+        openApp(url)
     }
 
     private func stopListening(silent: Bool) {
@@ -295,7 +311,7 @@ final class KeyboardViewController: UIInputViewController {
         if state != lastState { lastState = state; Shared.log("kb", "state \(state) for \(myDict.prefix(8))") }
         let interim = d.string(forKey: Shared.kInterim) ?? ""
         if state == "error: wake" {                 // iOS won't give a background app the mic: hop (once)
-            if listening && !hopping { hopping = true; setBar("starting the mic in clawd dictate… swipe back here", on: true); openApp(URL(string: "clawddictate://start?id=" + myDict)!) }
+            if listening && !hopping { hop(reason: "error: wake") }
             return
         }
         if state.hasPrefix("error") {

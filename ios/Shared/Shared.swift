@@ -73,6 +73,17 @@ enum Shared {
         return Date().timeIntervalSince(d) < 6
     }
     static let kLease = "keyboard.lease"
+    static let kHopAt = "hop.at"                 // Date: when a keyboard last sent the user through the app
+
+    /// One hop per cause is the most iOS allows (EXPECTATIONS.md). A keyboard
+    /// that hopped within `within` seconds and is asked to hop again shows the
+    /// wake button instead — hopping again would not open a mic the app could
+    /// not hold the first time, it would just yank the user around.
+    static func noteHop() { defaults.set(Date(), forKey: kHopAt) }
+    static func hoppedRecently(within: TimeInterval = 45) -> Bool {
+        guard let d = defaults.object(forKey: kHopAt) as? Date else { return false }
+        return Date().timeIntervalSince(d) < within
+    }
 
     static func renewLease(id: String, seconds: TimeInterval = 6) {
         defaults.set(["id": id, "until": Date().addingTimeInterval(seconds)], forKey: kLease)
