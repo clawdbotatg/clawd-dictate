@@ -16,7 +16,7 @@ struct ClawdHarnessApp: App {
     var body: some Scene {
         WindowGroup {
             WebView(url: URL(string: Secrets.relay + "/")!)
-                .padding(.bottom, 10)            // the screen's rounded corners clip the page's bottom bar; a sliver of black keeps its buttons whole (Austin, 09-17)
+                .padding(.bottom, 15)            // the screen's rounded corners clip the page's bottom bar; a sliver of black keeps its buttons whole (Austin, 09-17)
                 .ignoresSafeArea()               // viewport-fit=cover: the page owns the notch + home bar
                 .background(Color.black)
                 .preferredColorScheme(.dark)     // light status-bar text over the black page
