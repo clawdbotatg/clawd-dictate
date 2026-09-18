@@ -147,6 +147,31 @@ class Vocab:
 
 
 # ── one dictation: mic → Deepgram → live text → pasted ───────────────────────
+def open_mic(cb):
+    """Open the default input at 16 kHz mono. PortAudio enumerates devices ONCE
+    at init: when the default input changes under a long-running process (a
+    USB mic plugged in, AirPods, a display) every open fails with a PaMacCore
+    '!obj' error until the library is re-initialized. So on failure, reload
+    the device list and try once more (Austin, 09-17: a day-old app that never
+    heard anything)."""
+    import sounddevice as sd
+    for attempt in (1, 2):
+        try:
+            s = sd.RawInputStream(samplerate=16000, channels=1, dtype="int16", blocksize=1600, callback=cb)
+            s.start()
+            if attempt == 2:
+                log("mic: ok after device reload:", sd.query_devices(kind="input")["name"])
+            return s
+        except Exception as e:
+            if attempt == 2:
+                raise
+            log("mic: open failed (%s); reloading devices" % e)
+            try:
+                sd._terminate(); sd._initialize()
+            except Exception as e2:
+                log("mic: device reload failed:", e2)
+
+
 class Dictation:
     def __init__(self, key, vocab, on_text, on_done):
         self.key, self.vocab, self.on_text, self.on_done = key, vocab, on_text, on_done
@@ -181,8 +206,7 @@ class Dictation:
             if not self.stopping:
                 self.q.put(bytes(indata))
         try:
-            self.stream = sd.RawInputStream(samplerate=16000, channels=1, dtype="int16", blocksize=1600, callback=cb)
-            self.stream.start()
+            self.stream = open_mic(cb)
         except Exception as e:
             log("mic: failed:", e)
             self._close()
