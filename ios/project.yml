@@ -102,11 +102,13 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
         UIStatusBarStyle: UIStatusBarStyleLightContent
         ITSAppUsesNonExemptEncryption: false
-    entitlements:
-      # written by gen-secrets.sh, gitignored — carries webcredentials:<your relay host>
-      path: Harness/Harness.entitlements
     settings:
       base:
+        # Written by gen-secrets.sh, gitignored — carries webcredentials:<your relay host>.
+        # Referenced as a setting on purpose: an `entitlements:` block makes xcodegen
+        # REWRITE the file on every generate, and with no properties it writes an
+        # empty <dict/> — that produced the passkey-less build of 2026-09-17.
+        CODE_SIGN_ENTITLEMENTS: Harness/Harness.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.clawd.dictate.harness
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: true
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
