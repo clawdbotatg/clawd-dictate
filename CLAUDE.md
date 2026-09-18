@@ -106,7 +106,10 @@ before guessing at any phone problem.
   later build works from here without the account (why the dictate app never
   needed this: its profiles date from 09-15). **Do this with the entitlements
   file present and non-empty** — on 09-17 it had been emptied to `<dict/>`
-  when Austin picked the team, so Xcode minted a WILDCARD profile under a
+  (root cause: an `entitlements:` block in `project.yml` makes `xcodegen
+  generate` REWRITE the file, empty when no properties are listed; it is now a
+  `CODE_SIGN_ENTITLEMENTS` setting, which only references it — keep it that
+  way), so Xcode minted a WILDCARD profile under a
   different app-id prefix (QA8C2ZSAYY.*): no Associated Domains, the passkey
   button did nothing (WebAuthn NotAllowedError, silent), and the later
   correct build was refused as an upgrade (prefix mismatch) until
