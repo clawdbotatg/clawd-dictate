@@ -148,28 +148,26 @@ class Vocab:
 
 # ── one dictation: mic → Deepgram → live text → pasted ───────────────────────
 def open_mic(cb):
-    """Open the default input at 16 kHz mono. PortAudio enumerates devices ONCE
-    at init: when the default input changes under a long-running process (a
-    USB mic plugged in, AirPods, a display) every open fails with a PaMacCore
-    '!obj' error until the library is re-initialized. So on failure, reload
-    the device list and try once more (Austin, 09-17: a day-old app that never
-    heard anything)."""
+    """Open the default input at 16 kHz mono. PortAudio reads the device list
+    ONCE at init, so a mic plugged in under the long-running app left every
+    open failing with a PaMacCore '!obj' error (Austin, 09-17: the bar showed,
+    nothing was heard). A reload costs ~20 ms, so do it before EVERY open, and
+    retry once if the open still fails."""
     import sounddevice as sd
     for attempt in (1, 2):
         try:
+            sd._terminate(); sd._initialize()
+        except Exception as e:
+            log("mic: device reload failed:", e)
+        try:
             s = sd.RawInputStream(samplerate=16000, channels=1, dtype="int16", blocksize=1600, callback=cb)
             s.start()
-            if attempt == 2:
-                log("mic: ok after device reload:", sd.query_devices(kind="input")["name"])
+            log("mic: open:", sd.query_devices(kind="input")["name"])
             return s
         except Exception as e:
             if attempt == 2:
                 raise
-            log("mic: open failed (%s); reloading devices" % e)
-            try:
-                sd._terminate(); sd._initialize()
-            except Exception as e2:
-                log("mic: device reload failed:", e2)
+            log("mic: open failed (%s); retrying" % e)
 
 
 class Dictation:
@@ -202,9 +200,20 @@ class Dictation:
             return
         threading.Thread(target=self._recv, daemon=True).start()
 
+        heard = [0, False]                    # frames seen, any non-silence yet
+
         def cb(indata, frames, t, status):
-            if not self.stopping:
-                self.q.put(bytes(indata))
+            if self.stopping:
+                return
+            b = bytes(indata)
+            if not heard[1]:
+                heard[0] += frames
+                if any(b):
+                    heard[1] = True
+                elif heard[0] >= 32000:       # 2 s of pure zeros: the mic is open but dead
+                    heard[1] = True
+                    log("mic: 2 s of silence — open but hearing nothing")
+            self.q.put(b)
         try:
             self.stream = open_mic(cb)
         except Exception as e:
