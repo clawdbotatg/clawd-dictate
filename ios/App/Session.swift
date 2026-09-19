@@ -41,6 +41,9 @@ final class Session: NSObject, ObservableObject {
     private var firstResultLogged = false
     private var socketAttempt = 0           // 1-based; a failed socket is reopened up to socketTries times before the dictation fails
     static let socketTries = 4
+    private let bufferClock = AudioGate<Date>()   // when the tap last delivered audio (audio thread writes, main reads)
+    static let silentAfter: TimeInterval = 3      // a "running" engine that delivers nothing this long is dead: reopen it
+    private var pendingStart: String?             // a keyboard start the mic could not serve in the background; retried when the app becomes active
 
     override init() {
         super.init()
@@ -53,6 +56,7 @@ final class Session: NSObject, ObservableObject {
                 Shared.log("app", "\(tag) alive=\(self.alive) engine=\(self.micRunning) listening=\(self.listening)")
             })
         }
+        lifecycleObservers.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.onActive() })
         onCmd()   // a command may already be waiting (we were launched for it)
     }
 
@@ -133,16 +137,15 @@ final class Session: NSObject, ObservableObject {
                     let bg = self.inBackground
                     Shared.log("app", "openMic FAILED at start (bg=\(bg)): \(error)")
                     self.closeMic()
-                    // In the background iOS refuses a mic start: the keyboard hops once. In the
-                    // foreground the failure is real (another app holds the mic): say so.
+                    // In the background iOS refuses a mic start: the keyboard hops once, and the
+                    // start is retried the moment the app is active (onActive). In the foreground
+                    // the failure is real (another app holds the mic): say so.
+                    if bg { self.pendingStart = id }
                     self.fail(bg ? "wake" : "mic busy — \((error as NSError).code)")
                     return
                 }
                 Shared.log("app", "mic opened at start")
-                self.alive = true
-                self.heartbeat?.invalidate()
-                self.heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.heartbeatTick() }
-                Shared.defaults.set(Date(), forKey: Shared.kAlive)
+                self.markAlive()
                 self.beginStream(token: current.token)
             }
         }
@@ -223,20 +226,61 @@ final class Session: NSObject, ObservableObject {
     private var micRunning: Bool { engine.isRunning }
     private var inBackground: Bool { UIApplication.shared.applicationState != .active }
 
-    /// Every beat: a running engine is advertised to the keyboard; a stopped
-    /// one is reopened in place, or the mic is declared closed (heartbeat off,
-    /// so the next keyboard start hops through the app and opens it again).
+    private func markAlive() {
+        alive = true
+        heartbeat?.invalidate()
+        heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.heartbeatTick() }
+        Shared.defaults.set(Date(), forKey: Shared.kAlive)
+    }
+
+    /// Seconds since the tap last delivered a buffer. `isRunning` alone is not
+    /// proof: an engine can report running and deliver nothing (a mic opened
+    /// on a dead input format, an interruption iOS never told us about) — that
+    /// is "listening" with no words, fixed only by killing the app (09-18).
+    private var silentFor: TimeInterval {
+        var last: Date?
+        bufferClock.withTarget { last = $0 }
+        return last.map { Date().timeIntervalSince($0) } ?? .infinity
+    }
+
+    /// Every beat: an engine that delivers audio is advertised to the keyboard;
+    /// a stopped or silent one is reopened in place, or the mic is declared
+    /// closed (heartbeat off, so the next keyboard start hops through the app
+    /// and opens it again).
     private func heartbeatTick() {
         guard alive else { return }
-        if micRunning { Shared.defaults.set(Date(), forKey: Shared.kAlive); return }
+        let silent = silentFor
+        if micRunning && silent < Session.silentAfter { Shared.defaults.set(Date(), forKey: Shared.kAlive); return }
+        let why = micRunning ? "engine running but silent for \(Int(silent)) s" : "engine was stopped"
         do {
             try openMic()
-            Shared.log("app", "engine was stopped: reopened (bg=\(inBackground))")
+            Shared.log("app", "\(why): reopened (bg=\(inBackground))")
             Shared.defaults.set(Date(), forKey: Shared.kAlive)
         } catch {
-            Shared.log("app", "engine was stopped: reopen FAILED (bg=\(inBackground)): \(error) — mic declared closed")
+            Shared.log("app", "\(why): reopen FAILED (bg=\(inBackground)): \(error) — mic declared closed")
             closeMic()
-            if listening { fail("microphone lost — tap listen") }
+            if listening { fail(inBackground ? "wake" : "microphone lost — tap listen") }
+        }
+    }
+
+    /// The foreground is the one moment iOS lets us open a mic it refused in
+    /// the background. A closed mic opens here whatever brought the app up, and
+    /// a keyboard start the mic could not serve (the hop that brought us here)
+    /// runs now — before 09-18 nothing retried it: the app sat in front saying
+    /// "error: wake" and the keyboard hopped again on return.
+    private func onActive() {
+        Shared.log("app", "active alive=\(alive) engine=\(micRunning) silent=\(Int(min(silentFor, 999))) run=\(run?.id.prefix(8) ?? "-") pending=\(pendingStart?.prefix(8) ?? "-")")
+        if run == nil && !(alive && micRunning) {
+            do { try openMic(); markAlive(); armIdle(); Shared.log("app", "mic opened on activate") }
+            catch { Shared.log("app", "openMic on activate FAILED: \(error)"); closeMic() }
+        }
+        guard let id = pendingStart else { return }
+        pendingStart = nil
+        if run == nil, Shared.defaults.string(forKey: Shared.kCmd) == "start:" + id, (Shared.leaseUntil(id: id) ?? .distantPast) > Date() {
+            Shared.log("app", "pending start \(id.prefix(8)) retried on activate")
+            start(id: id)
+        } else {
+            Shared.log("app", "pending start \(id.prefix(8)) dropped (run=\(run?.id.prefix(8) ?? "-") cmd=\((Shared.defaults.string(forKey: Shared.kCmd) ?? "").prefix(14)))")
         }
     }
 
@@ -266,10 +310,7 @@ final class Session: NSObject, ObservableObject {
         if alive { heartbeatTick(); return }
         do {
             try openMic()
-            alive = true
-            heartbeat?.invalidate()
-            heartbeat = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.heartbeatTick() }
-            Shared.defaults.set(Date(), forKey: Shared.kAlive)
+            markAlive()
             Shared.log("app", "mic revived after interruption (bg=\(inBackground))")
             armIdle()
         } catch {
@@ -292,10 +333,17 @@ final class Session: NSObject, ObservableObject {
         try s.setActive(true)
         let input = engine.inputNode
         let inFmt = input.outputFormat(forBus: 0)
+        // A 0 Hz / 0-channel input is a mic iOS has not really given us: the
+        // converter would be nil, the tap would drop everything, and the engine
+        // would still report running — "listening" with no words, forever.
+        guard inFmt.sampleRate > 0, inFmt.channelCount > 0 else {
+            throw NSError(domain: "clawd.dictate", code: 1, userInfo: [NSLocalizedDescriptionKey: "input format \(inFmt.sampleRate) Hz / \(inFmt.channelCount) ch"])
+        }
         let outFmt = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
         converter = AVAudioConverter(from: inFmt, to: outFmt)
         input.installTap(onBus: 0, bufferSize: 4096, format: inFmt) { [weak self] buf, _ in
             guard let self = self else { return }
+            self.bufferClock.set(Date())          // audio is flowing, listening or not
             self.audioGate.withTarget { ws in
                 guard let conv = self.converter else { return }
                 let frames = AVAudioFrameCount(Double(buf.frameLength) * 16000 / inFmt.sampleRate) + 16
@@ -319,6 +367,7 @@ final class Session: NSObject, ObservableObject {
         }
         engine.prepare()
         try engine.start()
+        bufferClock.set(Date())                   // the first buffer gets silentAfter to arrive
     }
 
     private func closeMic() {

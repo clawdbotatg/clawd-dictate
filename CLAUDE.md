@@ -13,7 +13,7 @@ shared word list (Codex, ethskills, clawd…) plus hard replace rules
 
 **`EXPECTATIONS.md` is the contract** (Austin, 09-17): always listening, one
 field = one dictation, fast, never breaks itself. Read it before touching any
-surface. The phone writes `dictate.log` in the App Group container (both the
+surface. The phone writes `Library/dictate.log` in the App Group container (both the
 app and the keyboard); the pull command is in EXPECTATIONS.md — pull it
 before guessing at any phone problem.
 

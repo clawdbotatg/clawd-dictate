@@ -101,15 +101,30 @@ final class KeyboardViewController: UIInputViewController {
                    after: textDocumentProxy.documentContextAfterInput)
     }
 
+    /// Ours while the anchor matches — or, in a host that reports its context a
+    /// beat late (web views), while our own words still sit before the cursor.
     private var ownsCursor: Bool {
-        anchor?.permits(currentAnchor, selected: textDocumentProxy.selectedText) == true
+        guard let a = anchor else { return false }
+        let cur = currentAnchor
+        if a.permits(cur, selected: textDocumentProxy.selectedText) { return true }
+        return a.document == cur.document && (a.after ?? "") == (cur.after ?? "") && fieldHoldsWritten(cur.before) == true
     }
+
+    /// Does the text before the cursor end with what this dictation typed?
+    /// nil = the host reports no context (some never do): unknown, not a no.
+    private func fieldHoldsWritten(_ before: String?) -> Bool? {
+        guard !written.isEmpty else { return true }
+        guard let b = before, !b.isEmpty else { return nil }
+        return b.count >= written.count ? b.hasSuffix(written) : written.hasSuffix(b)
+    }
+    private var unconfirmedSince: Date?     // the field has shown something other than our last edit since then
 
     private func rememberCursor() { anchor = currentAnchor }
 
     private func abandon() {
         if !myDict.isEmpty { stopListening(silent: true) }
         myDict = ""; written = ""; committed = 0
+        unconfirmedSince = nil
         doneRequested = false
         hopping = false
         hideWake()
@@ -354,6 +369,24 @@ final class KeyboardViewController: UIInputViewController {
         guard ownsCursor else { cursorMoved(); return false }
         let want = String(target.dropFirst(committed))
         if want == written { return true }
+        // Edit only a field that shows our last edit landed. A host that shows
+        // something else gets no further edits: every revision piled onto a
+        // wrong model is another full copy of the interim (the harness composer
+        // held the same sentence six times, 09-18). A host catching up (web
+        // views) confirms within a tick; one that never does is not our field.
+        let before = textDocumentProxy.documentContextBeforeInput
+        if fieldHoldsWritten(before) == false {
+            let since = unconfirmedSince ?? Date()
+            if unconfirmedSince == nil {
+                unconfirmedSince = since
+                Shared.log("kb", "field does not end with our text: before=\(before?.count ?? -1) written=\(written.count) want=\(want.count) — holding edits")
+            }
+            if Date().timeIntervalSince(since) < 2.5 { return true }
+            Shared.log("kb", "field still not ours after 2.5 s — this dictation ends here")
+            unconfirmedSince = nil
+            cursorMoved(); return false
+        }
+        unconfirmedSince = nil
         let common = zip(written, want).prefix { $0 == $1 }.count
         for _ in 0..<(written.count - common) { textDocumentProxy.deleteBackward() }
         let tail = String(want.dropFirst(common))

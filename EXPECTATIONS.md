@@ -35,10 +35,12 @@ Mac tool, harness mic) is held to these. If a change breaks one, it is a bug.
 
 ```
 xcrun devicectl device copy from --device 8B053FBC-B638-548F-B045-F5DDE25D3BDD \
-  --source dictate.log --destination /tmp/dictate.log \
+  --source Library/dictate.log --destination /tmp/dictate.log \
   --domain-type appGroupDataContainer --domain-identifier group.com.clawd.dictate
 ```
 
-  If it fails with "File paths cannot contain '..'", the file does not exist:
-  the phone runs a build older than 2026-09-17 13:12, or the app has not run
-  since it was installed. Install the current build before anything else.
+  "Failed to retrieve the file node" means the file does not exist: the phone
+  runs a build older than 2026-09-18 18:30 (the log moved under `Library/`;
+  a root-level file fails with "File paths cannot contain '..'" and cannot be
+  pulled at all), or the app has not run since it was installed. Install the
+  current build before anything else.

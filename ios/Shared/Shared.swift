@@ -26,11 +26,17 @@ enum Shared {
 
     static var defaults: UserDefaults { UserDefaults(suiteName: group) ?? .standard }
 
-    // MARK: the log — `dictate.log` in the App Group container, both processes
-    // append. Pull it over USB: `xcrun devicectl device copy from --device <id>
-    // --source dictate.log --destination x.log --domain-type appGroupDataContainer
+    // MARK: the log — `Library/dictate.log` in the App Group container, both
+    // processes append. Pull it over USB: `xcrun devicectl device copy from --device <id>
+    // --source Library/dictate.log --destination x.log --domain-type appGroupDataContainer
     // --domain-identifier group.com.clawd.dictate`. Trimmed to ~150 KB.
-    static let logURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?.appendingPathComponent("dictate.log")
+    // Under Library/ on purpose: devicectl refuses a file at the container root
+    // ("File paths cannot contain '..'") — the 09-17 log could never be pulled.
+    static let logURL: URL? = {
+        guard let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)?.appendingPathComponent("Library") else { return nil }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("dictate.log")
+    }()
     private static let logQueue = DispatchQueue(label: "dictate.log")
     private static let logStamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f }()
     private static var logWrites = 0
