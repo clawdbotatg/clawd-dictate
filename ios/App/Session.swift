@@ -271,7 +271,7 @@ final class Session: NSObject, ObservableObject {
     private func onActive() {
         Shared.log("app", "active alive=\(alive) engine=\(micRunning) silent=\(Int(min(silentFor, 999))) run=\(run?.id.prefix(8) ?? "-") pending=\(pendingStart?.prefix(8) ?? "-")")
         if run == nil && !(alive && micRunning) {
-            do { try openMic(); markAlive(); armIdle(); Shared.log("app", "mic opened on activate") }
+            do { try openMic(); markAlive(); armIdle(); publish("idle"); Shared.log("app", "mic opened on activate") }   // publish: the screen still said "error: wake / mic off" (09-18)
             catch { Shared.log("app", "openMic on activate FAILED: \(error)"); closeMic() }
         }
         guard let id = pendingStart else { return }
@@ -311,6 +311,7 @@ final class Session: NSObject, ObservableObject {
         do {
             try openMic()
             markAlive()
+            publish("idle")
             Shared.log("app", "mic revived after interruption (bg=\(inBackground))")
             armIdle()
         } catch {

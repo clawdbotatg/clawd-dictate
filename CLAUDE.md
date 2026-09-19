@@ -56,6 +56,14 @@ before guessing at any phone problem.
   a SwiftUI `Link` work on iOS 18+ (responder-chain and extensionContext
   hacks are dead, see `openApp`); after that the mic stays open 24 h and starts at once.
 - **Mic between dictations: OPEN (orange dot), socket CLOSED.** Austin (09-15) wants no hop, and iOS refuses to start a mic in the background, so the mic stays open 24 h after the last dictation; the Deepgram socket exists only during a dictation and the locked audio gate controls sends. Stop invalidates pending starts; callbacks are scoped to a run token. Keyboard leases expire after 6 s (20 s for the app hop), and each recording is capped at 10 min. Releasing the mic was tried and rejected (hop on every keyboard use). Audio streams to Deepgram only while listening — the tap drops buffers otherwise. **"Mic open" means `engine.isRunning`, never a flag**: iOS stops the engine on its own (call, Siri, another app's mic, AirPods connecting, media reset) and never restarts it. The 2 s heartbeat checks the engine first and reopens a stopped one, or declares the mic closed so the keyboard hops. Before 09-17 a stale flag made "listening" stream silence until the app was killed.
+- **A foreground app that activates an audio session takes the mic away** from
+  the backgrounded dictate app (interruption, reason=default; iOS never gives
+  a background app the mic back — the next keyboard start hops once). The
+  harness PAGE was doing this on every launch of the 📱 harness app: its
+  Deepgram `AudioContext` ran for the page's life, so WebKit kept an audio
+  session active (09-18, the "error: wake" flip-flop). The page now suspends
+  the context between holds (`dgStop` in `clawd-harness/index.html`). The 🔊
+  voice playing in the harness app can still do it — a known cost.
 - The keyboard is a plain QWERTY with a bar on top (red dot = listening).
   It auto-starts when it appears. Each keyboard owns a UUID and a text-field/cursor anchor; no adoption by age. A field/cursor/context change ends that dictation and starts a new one in the new field at once (clicking into a box means record); Return ALWAYS stops (next document or keyboard re-show restarts). Start/stop mailbox commands use that same UUID; wake URLs carry it as `?id=…`. Typing a key commits the interim before appending.
 - Build: `sh ios/gen-secrets.sh` (Secrets.swift, gitignored — from `~/.config/clawd-dictate/env`: HARNESS_URL, CAL_URL, SLOP_URL, DEEPGRAM_API_KEY, DOCS_CREDENTIAL) → `cd ios &&
