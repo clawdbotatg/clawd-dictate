@@ -22,6 +22,13 @@ struct WebView: UIViewRepresentable {
         cfg.websiteDataStore = .default()          // persistent: passkey session, localStorage, ⚙️ prefs
         cfg.applicationNameForUserAgent = "clawd-harness-app"   // lets the page know it's inside the app
         cfg.defaultWebpagePreferences.allowsContentJavaScript = true
+        // 4. the page's console → `Library/web.log` in this app's container (pull:
+        //    `xcrun devicectl device copy from --device <id> --source Library/web.log
+        //    --destination x.log --domain-type appDataContainer --domain-identifier
+        //    com.clawd.dictate.harness`). There is no other way to see what the page
+        //    does on the phone (09-18: "I hit the mic button, nothing happens").
+        cfg.userContentController.add(context.coordinator, name: "log")
+        cfg.userContentController.addUserScript(WKUserScript(source: Coordinator.consoleHook, injectionTime: .atDocumentStart, forMainFrameOnly: true))
 
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.uiDelegate = context.coordinator
@@ -38,9 +45,38 @@ struct WebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
-    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
         let home: URL
         init(home: URL) { self.home = home }
+
+        static let consoleHook = """
+        (() => {
+          const post = (lvl, args) => { try { window.webkit.messageHandlers.log.postMessage(lvl + ' ' + args.map(a => { try { return typeof a === 'string' ? a : (a && a.stack) || JSON.stringify(a); } catch { return String(a); } }).join(' ').slice(0, 800)); } catch {} };
+          for (const lvl of ['log', 'warn', 'error']) { const orig = console[lvl].bind(console); console[lvl] = (...a) => { orig(...a); post(lvl, a); }; }
+          window.addEventListener('error', e => post('uncaught', [e.message, e.filename + ':' + e.lineno]));
+          window.addEventListener('unhandledrejection', e => post('unhandled', [(e.reason && (e.reason.stack || e.reason.message)) || String(e.reason)]));
+          post('log', ['page start ' + location.hash]);
+        })();
+        """
+        private static let logURL: URL? = {
+            guard let lib = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return nil }
+            return lib.appendingPathComponent("web.log")
+        }()
+        private static let stamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss.SSS"; return f }()
+        private static let logQueue = DispatchQueue(label: "harness.web.log")
+        static func log(_ msg: String) {
+            guard let url = logURL else { return }
+            let line = "\(stamp.string(from: Date())) \(msg)\n"
+            logQueue.async {
+                if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() }
+                else { try? line.data(using: .utf8)!.write(to: url) }
+                if let a = try? FileManager.default.attributesOfItem(atPath: url.path), (a[.size] as? Int ?? 0) > 400_000,
+                   let d = try? Data(contentsOf: url) { try? d.suffix(200_000).write(to: url) }
+            }
+        }
+        func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "log" { Coordinator.log(String(describing: message.body)) }
+        }
 
         private func isHome(_ host: String?) -> Bool {
             guard let h = host?.lowercased(), let mine = home.host?.lowercased() else { return false }

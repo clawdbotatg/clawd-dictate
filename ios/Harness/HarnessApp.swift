@@ -11,8 +11,20 @@
 // a WKWebView fails with NotAllowedError and the passkey gate never opens.
 import SwiftUI
 
+/// No third-party keyboards in THIS app (Austin, 09-18: "I wasn't using it
+/// here anyway"): the clawd keyboard auto-dictates whenever it appears, so a
+/// tap on the page's 🎤 (which focuses the composer) raised it and started a
+/// SECOND dictation of the same speech through the dictate app — two engines
+/// writing one box (the sixfold interim), and a fight over the microphone.
+final class HarnessAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, shouldAllowExtensionPointIdentifier id: UIApplication.ExtensionPointIdentifier) -> Bool {
+        id != .keyboard
+    }
+}
+
 @main
 struct ClawdHarnessApp: App {
+    @UIApplicationDelegateAdaptor(HarnessAppDelegate.self) private var delegate
     var body: some Scene {
         WindowGroup {
             WebView(url: URL(string: Secrets.relay + "/")!)
