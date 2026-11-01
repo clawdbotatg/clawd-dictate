@@ -1,64 +1,123 @@
-// Continuous speech-to-text from the Even G1 mic (LC3 over BLE) with Apple's
-// recognizer. One recognition request lasts ~1 min, so it restarts itself and
-// keeps the words heard so far (`committed`). `reset()` starts a fresh message.
+// Speech-to-text from the phone's current mic (AirPods when connected) with
+// Apple's on-device recognizer. Native on purpose: the mic keeps running with
+// the phone locked (UIBackgroundModes: audio), which a web page can't do.
+// (The G1's own mic only gives hiss, 11-01, so it isn't used.)
+//
+// openMic() starts the audio engine and leaves it running while 👓 is on — that
+// also keeps the app alive in the background. startTalking()/stopTalking()
+// bracket one message.
 import AVFoundation
 import Speech
 
 @MainActor
 final class GlassesListener {
-    /// Full text heard since the last reset (committed + live partial).
+    /// Live text of the message being spoken.
     var onText: ((String) -> Void)?
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private let engine = AVAudioEngine()
     private var task: SFSpeechRecognitionTask?
     private var committed = ""
     private var partial = ""
-    private var running = false
     private var generation = 0
+    private(set) var talking = false
+    private(set) var micOpen = false
+    private var configObserver: NSObjectProtocol?
 
-    private let fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000,
-                                    channels: 1, interleaved: false)!
-    // LC3: 16 kHz, 10 ms frames, 20 bytes per frame
-    private static let frameBytes = 20, frameSamples = 160
-    private var decoderMem: UnsafeMutableRawPointer?
-    private var decoder: lc3_decoder_t?
+    /// The audio thread appends to whatever request is current.
+    private final class Sink: @unchecked Sendable {
+        private let lock = NSLock()
+        private var req: SFSpeechAudioBufferRecognitionRequest?
+        func set(_ r: SFSpeechAudioBufferRecognitionRequest?) { lock.lock(); req = r; lock.unlock() }
+        func append(_ b: AVAudioPCMBuffer) { lock.lock(); req?.append(b); lock.unlock() }
+    }
+    private let sink = Sink()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
 
     var text: String { [committed, partial].filter { !$0.isEmpty }.joined(separator: " ") }
 
     static func authorize() async -> Bool {
-        await withCheckedContinuation { c in
+        let speech = await withCheckedContinuation { c in
             SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) }
         }
+        let mic = await AVAudioApplication.requestRecordPermission()
+        return speech && mic
     }
 
-    func start() {
-        GlassesBridge.log("listener start, recognizer available=\(recognizer?.isAvailable ?? false)")
-        if decoder == nil {
-            let size = Int(lc3_decoder_size(10000, 16000))
-            decoderMem = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
-            decoder = lc3_setup_decoder(10000, 16000, 0, decoderMem)
+    func openMic() throws {
+        guard !micOpen else { return }
+        let s = AVAudioSession.sharedInstance()
+        // .allowBluetooth = Bluetooth headset mic (AirPods). mixWithOthers so music etc. isn't killed.
+        try s.setCategory(.playAndRecord, mode: .default,
+                          options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers, .defaultToSpeaker])
+        try s.setActive(true)
+        if let bt = s.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) {
+            try? s.setPreferredInput(bt)
         }
-        running = true
+        try startEngine()
+        micOpen = true
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            // AirPods in/out etc.: the input format changed, rebuild the tap
+            Task { @MainActor in
+                guard let self, self.micOpen else { return }
+                GlassesBridge.log("audio route changed: \(self.inputName)")
+                self.engine.stop()
+                try? self.startEngine()
+            }
+        }
+        GlassesBridge.log("mic open: \(inputName)")
+    }
+
+    var inputName: String {
+        AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "none"
+    }
+
+    private func startEngine() throws {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        let fmt = input.outputFormat(forBus: 0)
+        let sink = self.sink
+        input.installTap(onBus: 0, bufferSize: 1024, format: fmt) { buf, _ in sink.append(buf) }
+        engine.prepare()
+        try engine.start()
+    }
+
+    func closeMic() {
+        stopTalkingNow()
+        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
+        configObserver = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        micOpen = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    func startTalking() {
         committed = ""; partial = ""
+        talking = true
         begin()
     }
 
-    func stop() {
-        running = false
+    /// Stop and return what was said (waits briefly for the last words).
+    func stopTalking() async -> String {
+        guard talking else { return "" }
+        talking = false
+        request?.endAudio()
+        for _ in 0..<10 where task != nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+        let t = text
         endTask()
+        return t
     }
 
-    /// Clear the words (after a send) and keep listening.
-    func reset() {
-        committed = ""; partial = ""
+    private func stopTalkingNow() {
+        talking = false
         endTask()
-        if running { begin() }
-        onText?("")
     }
 
     private func endTask() {
         generation += 1
+        sink.set(nil)
         request?.endAudio()
         task?.cancel()
         request = nil; task = nil
@@ -70,7 +129,9 @@ final class GlassesListener {
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         req.addsPunctuation = true
+        if recognizer?.supportsOnDeviceRecognition == true { req.requiresOnDeviceRecognition = true }
         request = req
+        sink.set(req)
         task = recognizer?.recognitionTask(with: req) { [weak self] result, err in
             Task { @MainActor in
                 guard let self, gen == self.generation else { return }
@@ -78,37 +139,14 @@ final class GlassesListener {
                     self.partial = result.bestTranscription.formattedString
                     self.onText?(self.text)
                 }
-                if let err { GlassesBridge.log("speech error: \(err.localizedDescription)") }
+                if let err { GlassesBridge.log("speech: \(err.localizedDescription)") }
                 if err != nil || result?.isFinal == true {
-                    // this request is over (time limit / silence): keep its words, start another
-                    if !self.partial.isEmpty {
-                        self.committed = self.text
-                        self.partial = ""
-                    }
-                    if self.running { self.begin() }
+                    // request over (time limit / pause / endAudio): keep its words
+                    if !self.partial.isEmpty { self.committed = self.text; self.partial = "" }
+                    self.task = nil
+                    if self.talking { self.begin() }   // still talking: start another
                 }
             }
         }
-    }
-
-    /// LC3 payload from one 0xF1 mic packet (2-byte header already stripped).
-    func feed(_ data: Data) {
-        guard running, let decoder, let request else { return }
-        let n = data.count / Self.frameBytes
-        guard n > 0, let buf = AVAudioPCMBuffer(pcmFormat: fmt,
-                                                frameCapacity: AVAudioFrameCount(n * Self.frameSamples)) else { return }
-        var pcm = [Int16](repeating: 0, count: Self.frameSamples)
-        let out = buf.floatChannelData![0]
-        data.withUnsafeBytes { raw in
-            for f in 0..<n {
-                let p = raw.baseAddress!.advanced(by: f * Self.frameBytes)
-                pcm.withUnsafeMutableBytes { dst in
-                    _ = lc3_decode(decoder, p, Int32(Self.frameBytes), LC3_PCM_FORMAT_S16, dst.baseAddress, 1)
-                }
-                for i in 0..<Self.frameSamples { out[f * Self.frameSamples + i] = Float(pcm[i]) / 32768 }
-            }
-        }
-        buf.frameLength = AVAudioFrameCount(n * Self.frameSamples)
-        request.append(buf)
     }
 }

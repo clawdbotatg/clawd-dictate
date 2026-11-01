@@ -98,9 +98,9 @@ targets:
       path: Harness/Info.plist
       properties:
         CFBundleDisplayName: clawd harness
-        UIBackgroundModes: [bluetooth-central]
+        UIBackgroundModes: [bluetooth-central, audio]
         NSBluetoothAlwaysUsageDescription: Connects to your Even G1 glasses.
-        NSSpeechRecognitionUsageDescription: Turns what you say into the glasses mic into text.
+        NSSpeechRecognitionUsageDescription: Turns what you say (AirPods or phone mic) into text for your sessions.
         CFBundleName: ClawdHarness
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: clawd harness uses the microphone to dictate into your sessions; audio goes to Deepgram for transcription.
