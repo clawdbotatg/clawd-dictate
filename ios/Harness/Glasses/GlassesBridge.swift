@@ -5,8 +5,7 @@
 //             {op:"show", text}       put text on the glasses (latest wins, throttled)
 //             {op:"sent"}             the page sent the box: clear the heard words
 // app → page  window.__glasses({type:"state", on, connected, status})
-//             window.__glasses({type:"text", text})     words heard since the last send
-//             window.__glasses({type:"send"})           glasses tap = send the box
+//             window.__glasses({type:"tap", side})      a single tap on a glasses arm
 import Foundation
 import WebKit
 
@@ -28,65 +27,51 @@ final class GlassesBridge: NSObject, WKScriptMessageHandler {
         case "start": Task { await start() }
         case "stop": Task { await stop() }
         case "show": show(body["text"] as? String ?? "")
-        case "sent": listener.reset()
+        case "sent": break
         default: break
         }
     }
 
+    static func log(_ s: String) { WebView.Coordinator.log("[g1] " + s) }
+    private var micBytes = 0, micPackets = 0
+    private var micDump = Data()
+
     private func start() async {
         guard !on else { return }
-        guard await GlassesListener.authorize() else {
-            post(["type": "state", "on": false, "connected": false, "status": "Allow Speech Recognition in Settings"])
-            return
-        }
+        Self.log("start")
         on = true
         let g = g1 ?? G1()
         g1 = g
-        g.onMic = { [weak self] d in self?.listener.feed(d) }
-        g.onEvent = { [weak self] _, name in
+        // 10-31: the glasses mic stream decodes to hiss (no words, same with Even's
+        // own decoder), so listening uses the page's 🎤 (phone mic, Deepgram) for
+        // now. The glasses are the display + the tap. GlassesListener stays for later.
+        g.onEvent = { [weak self] side, name in
+            Self.log("event \(side.rawValue) \(name)")
             guard let self, self.on else { return }
-            if name == "single_tap" { self.post(["type": "send"]) }
+            if name == "single_tap" { self.post(["type": "tap", "side": side.rawValue]) }
         }
-        listener.onText = { [weak self] t in
-            guard let self, self.on else { return }
-            self.post(["type": "text", "text": t])
-            if !t.isEmpty { self.show("> " + t) }
-        }
-        listener.start()
-        // wait for the BLE link (up to 20 s), then open the mic
         statusTimer?.invalidate()
         statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.postState() }
         }
         for _ in 0..<40 where !g.connected { try? await Task.sleep(nanoseconds: 500_000_000) }
+        Self.log("connected=\(g.connected)")
         postState()
-        if g.connected && on {
-            await g.mic(true)
-            show("Listening. Tap the arm to send.")
-        }
+        if g.connected && on { show("Tap the arm to talk.") }
     }
 
     private func stop() async {
         guard on else { return }
         on = false
-        listener.stop()
+        Self.log("stop")
         statusTimer?.invalidate(); statusTimer = nil
-        if let g = g1, g.connected {
-            await g.mic(false)
-            await g.clear()
-        }
+        if let g = g1, g.connected { await g.clear() }
         postState()
     }
 
     private func postState() {
         post(["type": "state", "on": on, "connected": g1?.connected ?? false,
               "status": g1?.status ?? ""])
-        // mic re-arm after a reconnect
-        if on, let g = g1, g.connected, statusTimer != nil, !micArmed {
-            micArmed = true
-            Task { await g.mic(true) }
-        }
-        if !(g1?.connected ?? false) { micArmed = false }
     }
     private var micArmed = false
 

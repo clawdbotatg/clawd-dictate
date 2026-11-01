@@ -162,6 +162,11 @@ final class G1: NSObject, ObservableObject {
         await request(Data([0x0E, on ? 1 : 0]), .R)
     }
 
+    func micReply(_ on: Bool) async -> Data? {
+        guard connected else { return nil }
+        return await request(Data([0x0E, on ? 1 : 0]), .R)
+    }
+
     func readBattery() async {
         guard connected, let r = await request(G1P.battery, .L), r.count > 2 else { return }
         battery = Int(r[2])
@@ -267,6 +272,7 @@ extension G1: CBCentralManagerDelegate, CBPeripheralDelegate {
                 onEvent?(side, name)
                 return
             }
+            if first != G1P.cmdHeartbeat { GlassesBridge.log("rx \(side.rawValue) " + data.prefix(12).map { String(format: "%02x", $0) }.joined()) }
             if let c = waiters.removeValue(forKey: "\(side.rawValue)-\(first)") {
                 c.resume(returning: data)
             }

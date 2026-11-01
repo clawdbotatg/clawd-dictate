@@ -33,6 +33,7 @@ final class GlassesListener {
     }
 
     func start() {
+        GlassesBridge.log("listener start, recognizer available=\(recognizer?.isAvailable ?? false)")
         if decoder == nil {
             let size = Int(lc3_decoder_size(10000, 16000))
             decoderMem = UnsafeMutableRawPointer.allocate(byteCount: size, alignment: 16)
@@ -77,6 +78,7 @@ final class GlassesListener {
                     self.partial = result.bestTranscription.formattedString
                     self.onText?(self.text)
                 }
+                if let err { GlassesBridge.log("speech error: \(err.localizedDescription)") }
                 if err != nil || result?.isFinal == true {
                     // this request is over (time limit / silence): keep its words, start another
                     if !self.partial.isEmpty {
