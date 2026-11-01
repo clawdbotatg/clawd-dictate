@@ -49,6 +49,12 @@ final class G1: NSObject, ObservableObject {
                 adopt(p, side: side)
             }
         }
+        // Glasses already connected (by another app) don't advertise: pick them up here.
+        for p in central.retrieveConnectedPeripherals(withServices: [CBUUID(string: G1P.service)]) {
+            let name = p.name ?? ""
+            let side: Side? = name.contains("_L_") ? .L : name.contains("_R_") ? .R : nil
+            if let side, periph[side] == nil { adopt(p, side: side) }
+        }
         if periph.count < 2 { scan() }
     }
 
