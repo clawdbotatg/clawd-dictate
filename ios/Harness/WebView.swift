@@ -13,7 +13,7 @@ import WebKit
 struct WebView: UIViewRepresentable {
     let url: URL
 
-    func makeCoordinator() -> Coordinator { Coordinator(home: url) }
+    func makeCoordinator() -> Coordinator { Coordinator(home: url, glasses: GlassesBridge()) }
 
     func makeUIView(context: Context) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -29,6 +29,7 @@ struct WebView: UIViewRepresentable {
         //    does on the phone (09-18: "I hit the mic button, nothing happens").
         cfg.userContentController.add(context.coordinator, name: "log")
         cfg.userContentController.addUserScript(WKUserScript(source: Coordinator.consoleHook, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        cfg.userContentController.add(context.coordinator.glasses, name: "glasses")   // 👓 see GlassesBridge
 
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.uiDelegate = context.coordinator
@@ -39,6 +40,7 @@ struct WebView: UIViewRepresentable {
         wv.scrollView.contentInsetAdjustmentBehavior = .never   // the page reads env(safe-area-inset-*) itself
         wv.scrollView.bounces = false                            // the page has its own scroll regions; no rubber-band
         wv.allowsBackForwardNavigationGestures = false           // hash routing; an edge swipe would leave the app's page
+        context.coordinator.glasses.webView = wv
         wv.load(URLRequest(url: url))
         return wv
     }
@@ -47,7 +49,8 @@ struct WebView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKUIDelegate, WKNavigationDelegate, WKScriptMessageHandler {
         let home: URL
-        init(home: URL) { self.home = home }
+        let glasses: GlassesBridge
+        init(home: URL, glasses: GlassesBridge) { self.home = home; self.glasses = glasses }
 
         static let consoleHook = """
         (() => {
