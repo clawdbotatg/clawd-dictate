@@ -1,11 +1,12 @@
-// Speech-to-text from the phone's current mic (AirPods when connected) with
-// Apple's on-device recognizer. Native on purpose: the mic keeps running with
-// the phone locked (UIBackgroundModes: audio), which a web page can't do.
-// (The G1's own mic only gives hiss, 11-01, so it isn't used.)
+// Speech-to-text with Apple's on-device recognizer. Audio comes from the
+// glasses' LEFT mic (the right one on this pair is static, 11-18), or from the
+// phone's current mic (AirPods when connected) if the glasses send nothing.
+// Native on purpose: it keeps running with the phone locked
+// (UIBackgroundModes: audio), which a web page can't do.
 //
 // openMic() starts the audio engine and leaves it running while 👓 is on — that
-// also keeps the app alive in the background. startTalking()/stopTalking()
-// bracket one message.
+// keeps the app alive in the background and is the backup mic.
+// startTalking()/stopTalking() bracket one message.
 import AVFoundation
 import Speech
 
@@ -21,6 +22,14 @@ final class GlassesListener {
     private var partial = ""
     private var generation = 0
     private(set) var talking = false
+    /// Where this message's audio comes from.
+    private(set) var fromGlasses = false
+    /// Glasses mic packets heard in this message.
+    private(set) var glassesPackets = 0
+    private var decoderMem: UnsafeMutableRawPointer?
+    private var decoder: lc3_decoder_t?
+    private let pcm16k = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000,
+                                       channels: 1, interleaved: false)!
     private(set) var micOpen = false
     private var configObserver: NSObjectProtocol?
 
@@ -93,10 +102,50 @@ final class GlassesListener {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    func startTalking() {
+    func startTalking(glasses: Bool = false) {
         committed = ""; partial = ""
         talking = true
+        fromGlasses = glasses
+        glassesPackets = 0
+        if glasses { resetDecoder() }
         begin()
+    }
+
+    /// The glasses sent no audio: take this message from the phone's mic instead.
+    func usePhoneMic() {
+        guard talking, fromGlasses else { return }
+        fromGlasses = false
+        begin()
+    }
+
+    var micName: String { fromGlasses ? "glasses mic" : inputName }
+
+    private func resetDecoder() {
+        decoderMem?.deallocate()
+        decoderMem = UnsafeMutableRawPointer.allocate(byteCount: Int(lc3_decoder_size(10000, 16000)), alignment: 16)
+        decoder = lc3_setup_decoder(10000, 16000, 0, decoderMem)
+    }
+
+    /// LC3 audio from a glasses mic packet (header already stripped): 20-byte
+    /// frames, 10 ms each, 16 kHz mono.
+    func feedLC3(_ data: Data) {
+        guard talking, fromGlasses, let decoder else { return }
+        glassesPackets += 1
+        let n = data.count / 20
+        guard n > 0, let request,
+              let buf = AVAudioPCMBuffer(pcmFormat: pcm16k, frameCapacity: AVAudioFrameCount(n * 160)) else { return }
+        var pcm = [Int16](repeating: 0, count: 160)
+        let out = buf.floatChannelData![0]
+        data.withUnsafeBytes { raw in
+            for f in 0..<n {
+                pcm.withUnsafeMutableBytes { dst in
+                    _ = lc3_decode(decoder, raw.baseAddress!.advanced(by: f * 20), 20, LC3_PCM_FORMAT_S16, dst.baseAddress, 1)
+                }
+                for i in 0..<160 { out[f * 160 + i] = Float(pcm[i]) / 32768 }
+            }
+        }
+        buf.frameLength = AVAudioFrameCount(n * 160)
+        request.append(buf)
     }
 
     /// Stop and return what was said (waits briefly for the last words).
@@ -126,12 +175,13 @@ final class GlassesListener {
     private func begin() {
         generation += 1
         let gen = generation
+        task?.cancel()
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         req.addsPunctuation = true
         if recognizer?.supportsOnDeviceRecognition == true { req.requiresOnDeviceRecognition = true }
         request = req
-        sink.set(req)
+        sink.set(fromGlasses ? nil : req)   // glasses audio arrives through feedLC3
         task = recognizer?.recognitionTask(with: req) { [weak self] result, err in
             Task { @MainActor in
                 guard let self, gen == self.generation else { return }

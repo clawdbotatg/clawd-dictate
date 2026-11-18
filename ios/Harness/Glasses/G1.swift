@@ -156,15 +156,12 @@ final class G1: NSObject, ObservableObject {
         await request(G1P.brightness(level, auto: false), .R)
     }
 
-    /// Turn the glasses mic (right arm) on or off.
-    func mic(_ on: Bool) async {
-        guard connected else { return }
-        await request(Data([0x0E, on ? 1 : 0]), .R)
-    }
-
-    func micReply(_ on: Bool) async -> Data? {
+    /// Turn the glasses mic on or off. Even's docs only list the right arm, but the
+    /// left arm has one too. Left is the default: the right mic on this pair is static.
+    @discardableResult
+    func mic(_ on: Bool, side: Side = .L) async -> Data? {
         guard connected else { return nil }
-        return await request(Data([0x0E, on ? 1 : 0]), .R)
+        return await request(Data([0x0E, on ? 1 : 0]), side)
     }
 
     func readBattery() async {
@@ -263,7 +260,7 @@ extension G1: CBCentralManagerDelegate, CBPeripheralDelegate {
         MainActor.assumeIsolated {
             guard let data = ch.value, let first = data.first, let side = side(of: p) else { return }
             if first == 0xF1, data.count > 2 {
-                onMic?(data.dropFirst(2))
+                onMic?(Data(data.dropFirst(2)))
                 return
             }
             if first == G1P.evtDevice, data.count > 1 {
