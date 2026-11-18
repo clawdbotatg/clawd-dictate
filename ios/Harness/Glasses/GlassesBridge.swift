@@ -37,10 +37,6 @@ final class GlassesBridge: NSObject, WKScriptMessageHandler {
     // session lines kept on top of every screen
     private var head = ""
     private var desc = ""
-    // head tilt test (11-18): "UP" / "DOWN" in front of the session line
-    private var headPos = ""
-    private var lastText = ""
-    private var lastTail = false
 
     // A double tap is reported more than once: a LEFT one comes from L, then R
     // ~20 ms later, then R again ~450 ms later; a RIGHT one comes from R twice.
@@ -106,9 +102,6 @@ final class GlassesBridge: NSObject, WKScriptMessageHandler {
             if !listener.talking { startTalking() }
         case "long_press_end":
             if listener.talking { Task { await finishTalking() } }
-        case "head_up", "head_down":
-            headPos = name == "head_up" ? "UP" : "DOWN"
-            show(lastText, tail: lastTail)
         case "double_tap":
             guard Date() >= tapQuietUntil else { return }
             if side == "L" { tapSawLeft = true }
@@ -206,8 +199,7 @@ final class GlassesBridge: NSObject, WKScriptMessageHandler {
             let t = s.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
             return t.count > 38 ? String(t.prefix(35)) + "..." : t
         }
-        let first = (headPos.isEmpty ? "" : "[\(headPos)] ") + head
-        var top = [oneLine(first), oneLine(desc)].filter { !$0.isEmpty }
+        var top = [oneLine(head), oneLine(desc)].filter { !$0.isEmpty }
         if top.count == 2, top[0].lowercased().contains(top[1].lowercased()) { top.removeLast() }
         let room = G1P.linesPerPage - top.count
         var body = G1P.wrap(text)
@@ -219,7 +211,6 @@ final class GlassesBridge: NSObject, WKScriptMessageHandler {
     }
 
     private func show(_ text: String, tail: Bool = false) {
-        lastText = text; lastTail = tail
         pendingShow = screen(text, tail: tail)
         guard !showing else { return }
         showing = true
